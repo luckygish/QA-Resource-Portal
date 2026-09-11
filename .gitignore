@@ -1,0 +1,16 @@
+# Runtime data (contains live user data; regenerated on start)
+data.json
+
+# Dependencies
+node_modules/
+
+# Built executable
+portal.exe
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+npm-debug.log*
+*.log

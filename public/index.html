@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Resource Portal</title>
+  <link rel="stylesheet" href="vendor/frappe-gantt.min.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>QA Resource Portal</h1>
+    <nav class="tabs">
+      <button class="tab active" data-tab="resources">Ресурсы</button>
+      <button class="tab" data-tab="requests">Потребности</button>
+      <button class="tab" data-tab="registry">Реестр навыков</button>
+      <button class="tab" data-tab="projects">Реестр проектов</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ======= Resources tab ======= -->
+    <section id="resources" class="tab-panel">
+      <div class="toolbar">
+        <div class="filters">
+          <label>Грейд
+            <select id="filter-grade">
+              <option value="">Все</option>
+              <option>Junior</option>
+              <option>Middle</option>
+              <option>Senior</option>
+              <option>Lead</option>
+            </select>
+          </label>
+          <label>Проект
+            <select id="filter-project"><option value="">Все</option></select>
+          </label>
+          <label>Статус
+            <select id="filter-status">
+              <option value="">Все</option>
+              <option>свободен</option>
+              <option>частично занят</option>
+              <option>полностью занят</option>
+            </select>
+          </label>
+          <label>Период с <input type="date" id="filter-from" /></label>
+          <label>по <input type="date" id="filter-to" /></label>
+          <button id="reset-filters" class="ghost">Сброс</button>
+        </div>
+        <div class="actions">
+          <button id="add-tester" class="primary">+ Тестировщик</button>
+          <button id="add-request" class="primary">Потребность</button>
+        </div>
+      </div>
+
+      <table class="grid">
+        <thead>
+          <tr>
+            <th>ФИО</th>
+            <th>Проекты</th>
+            <th>Статус</th>
+            <th>Грейд</th>
+            <th>Навыки</th>
+          </tr>
+        </thead>
+        <tbody id="user-rows"></tbody>
+      </table>
+      <p id="empty-state" class="empty hidden">Никого не найдено по заданным фильтрам.</p>
+    </section>
+
+    <!-- ======= Requests tab ======= -->
+    <section id="requests" class="tab-panel hidden">
+      <div class="toolbar">
+        <div class="filters">
+          <label>Статус
+            <select id="req-filter-status">
+              <option value="">Все</option>
+              <option>Новая</option>
+              <option>В работе</option>
+              <option>Закрыта</option>
+              <option>Отклонена</option>
+            </select>
+          </label>
+          <label>Проект
+            <select id="req-filter-project"><option value="">Все</option></select>
+          </label>
+          <label>Грейд
+            <select id="req-filter-grade">
+              <option value="">Все</option>
+              <option>Junior</option>
+              <option>Middle</option>
+              <option>Senior</option>
+              <option>Lead</option>
+            </select>
+          </label>
+          <button id="reset-req-filters" class="ghost">Сброс</button>
+        </div>
+        <div class="actions">
+          <button id="req-add-request" class="primary">Потребность</button>
+        </div>
+      </div>
+
+      <div id="request-list" class="card-list"></div>
+    </section>
+
+    <!-- ======= Registry tab ======= -->
+    <section id="registry" class="tab-panel hidden">
+      <div class="toolbar">
+        <div class="filters">
+          <label>Поиск
+            <input type="text" id="reg-search" placeholder="Название навыка" />
+          </label>
+          <label>Категория
+            <select id="reg-cat"><option value="">Все</option></select>
+          </label>
+          <button id="reset-reg-filters" class="ghost">Сброс</button>
+        </div>
+        <div class="actions">
+          <button id="reg-add" class="primary">+ Добавить навык</button>
+        </div>
+      </div>
+
+      <table class="grid">
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Категория</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody id="reg-rows"></tbody>
+      </table>
+      <p id="reg-empty" class="empty hidden">Ничего не найдено.</p>
+    </section>
+
+    <!-- ======= Projects registry tab ======= -->
+    <section id="projects" class="tab-panel hidden">
+      <div class="sub-tabs">
+        <button class="sub-tab active" data-sub="proj">Проекты</button>
+        <button class="sub-tab" data-sub="mgr">Менеджеры</button>
+      </div>
+
+      <!-- projects subview -->
+      <div id="sub-proj">
+        <div class="toolbar">
+          <div class="filters">
+            <label>Поиск
+              <input type="text" id="proj-search" placeholder="Название, аббревиатура" />
+            </label>
+            <label>Название
+              <select id="proj-filter-name"><option value="">Все</option></select>
+            </label>
+            <label>Аббревиатура
+              <select id="proj-filter-abbr"><option value="">Все</option></select>
+            </label>
+            <label>Номер ГК
+              <select id="proj-filter-contract"><option value="">Все</option></select>
+            </label>
+            <button id="reset-proj-filters" class="ghost">Сброс</button>
+          </div>
+          <div class="actions">
+            <button id="proj-add" class="primary">+ Добавить проект</button>
+          </div>
+        </div>
+
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Аббревиатура</th>
+              <th>Номер контракта</th>
+              <th>Менеджер проекта</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="proj-rows"></tbody>
+        </table>
+        <p id="proj-empty" class="empty hidden">Проектов не найдено.</p>
+      </div>
+
+      <!-- managers subview -->
+      <div id="sub-mgr" class="hidden">
+        <div class="toolbar">
+          <div class="filters">
+            <label>Поиск
+              <input type="text" id="mgr-search" placeholder="ФИО или email" />
+            </label>
+            <button id="reset-mgr-filters" class="ghost">Сброс</button>
+          </div>
+          <div class="actions">
+            <button id="mgr-add" class="primary">+ Добавить менеджера</button>
+          </div>
+        </div>
+
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>ФИО</th>
+              <th>Email</th>
+              <th>Проекты</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="mgr-rows"></tbody>
+        </table>
+        <p id="mgr-empty" class="empty hidden">Менеджеров не найдено.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ======= Modal root ======= -->
+  <div id="modal-root"></div>
+
+  <script src="vendor/frappe-gantt.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
