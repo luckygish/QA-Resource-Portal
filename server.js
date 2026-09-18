@@ -776,7 +776,7 @@ app.post('/api/jira/search', async (req, res) => {
 
 app.get('/api/jira/users', async (req, res) => {
   try {
-    res.json(await jira.users());
+    res.json(await jira.users(req.query.q));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }

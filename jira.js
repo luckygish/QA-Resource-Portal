@@ -179,9 +179,21 @@ module.exports = {
     };
   },
 
-  async users() {
+  async users(q) {
     const cfg = loadConfig();
     if (!cfg.configured) throw notConfigured();
+    const query = String(q || '').trim();
+    if (query) {
+      const list = await jiraCall(`/user/search?username=${encodeURIComponent(query)}&maxResults=50`, cfg);
+      const lower = query.toLowerCase();
+      const out = (Array.isArray(list) ? list : [])
+        .map((u) => mapUser(u))
+        .filter((m) => m && ( (m.displayName || '').toLowerCase().includes(lower)
+          || (m.name || '').toLowerCase().includes(lower)
+          || (m.emailAddress || '').toLowerCase().includes(lower) ));
+      out.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || '', 'ru'));
+      return out;
+    }
     const out = [];
     const cap = 1500;
     const batch = 1000;

@@ -646,19 +646,22 @@
     // add assignment
     box.appendChild(el('div', 'section-title', 'Добавить назначение'));
     const add = el('div', 'assign-add');
-    const af = el('select');
-    af.appendChild(new Option('Выберите проект', ''));
-    state.data.projects.forEach((p) => af.appendChild(new Option(p.name, String(p.id))));
+    const afPick = searchableSelect({
+      placeholder: 'Выберите проект',
+      options: state.data.projects.map((p) => ({ value: p.id, label: p.name + (p.abbreviation ? ` (${p.abbreviation})` : '') })),
+    });
+    const af = afPick.root;
     const as = dateInput(todayISO());
     const ae = dateInput(todayISO());
     const ap = el('input');
     ap.type = 'number'; ap.min = 1; ap.max = 100; ap.value = 50;
     const ab = el('button', 'small primary', 'Добавить');
     ab.addEventListener('click', async () => {
-      if (!af.value) return toast('Выберите проект', 'error');
+      const projectId = afPick.getValue();
+      if (!projectId) return toast('Выберите проект', 'error');
       const pct = validPercent(ap.value);
       if (pct == null) return toast('Занятость должна быть в диапазоне 1–100%', 'error');
-      const candidate = { id: 0, projectId: Number(af.value), start: as.value, end: ae.value, percent: pct };
+      const candidate = { id: 0, projectId: Number(projectId), start: as.value, end: ae.value, percent: pct };
       const conflicts = overloadConflicts(u, candidate);
       if (conflicts) return msgConflict({ conflicts });
       try {
@@ -717,6 +720,72 @@
       state.modalHeader = null;
       state.modalBody = null;
     }
+  }
+
+  /* ---------------- shared controls: searchable select + helpers ---------------- */
+
+  function searchableSelect({ placeholder, options, onChange }) {
+    const root = el('div', 'searchable-select');
+    const toggle = el('button', 'dd-toggle searchable-toggle'); toggle.type = 'button'; toggle.textContent = placeholder;
+    const panel = el('div', 'dd-panel hidden');
+    const search = el('input', 'dd-search'); search.placeholder = 'Поиск…';
+    const list = el('div', 'dd-list');
+    panel.appendChild(search);
+    panel.appendChild(list);
+    root.appendChild(toggle);
+    root.appendChild(panel);
+    let selected = null;
+
+    function renderList(q) {
+      list.innerHTML = '';
+      const items = q ? options.filter((o) => String(o.label).toLowerCase().includes(q)) : options;
+      if (!items.length) { list.appendChild(el('div', 'dd-empty', 'Ничего не найдено.')); return; }
+      items.forEach((o) => {
+        const row = el('div', 'check-item' + (selected && String(selected.value) === String(o.value) ? ' selected' : ''));
+        row.appendChild(el('span', null, o.label));
+        if (selected && String(selected.value) === String(o.value)) row.appendChild(el('span', 'check-mark', '\u2713'));
+        row.addEventListener('click', () => { selected = o; toggle.textContent = o.label; toggle.title = o.label; hide(); if (typeof onChange === 'function') onChange(selected.value); });
+        list.appendChild(row);
+      });
+    }
+    function hide() { panel.classList.add('hidden'); }
+    function show() {
+      document.querySelectorAll('.searchable-select .dd-panel').forEach((p) => { if (p !== panel) p.classList.add('hidden'); });
+      panel.classList.remove('hidden');
+      renderList(search.value.trim().toLowerCase());
+      search.focus();
+    }
+    toggle.addEventListener('click', (e) => { e.stopPropagation(); panel.classList.contains('hidden') ? show() : hide(); });
+    search.addEventListener('input', () => renderList(search.value.trim().toLowerCase()));
+    document.addEventListener('click', (e) => { if (!root.contains(e.target)) hide(); });
+
+    return {
+      root,
+      getValue: () => (selected ? selected.value : null),
+      setValue: (v) => {
+        selected = options.find((o) => String(o.value) === String(v)) || null;
+        toggle.textContent = selected ? selected.label : placeholder;
+        toggle.title = selected ? selected.label : '';
+      },
+    };
+  }
+
+  async function searchJiraUsers(q) {
+    const query = String(q || '').trim();
+    if (!query) return [];
+    try {
+      return (await api('/api/jira/users?q=' + encodeURIComponent(query))) || [];
+    } catch (e) { return []; }
+  }
+
+  function findPortalUser(name, email) {
+    const normName = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const normEmail = String(email || '').trim().toLowerCase();
+    return state.data.users.find((u) => {
+      const un = String(u.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const ue = String(u.email || '').trim().toLowerCase();
+      return (normEmail && ue && normEmail === ue) || (normName && un && normName === un);
+    });
   }
 
   /* ---------------- requests tab ---------------- */
@@ -822,9 +891,15 @@
       return f;
     };
 
-    const projectSel = el('select');
-    projectSel.appendChild(new Option('Выберите проект', ''));
-    state.data.projects.forEach((p) => projectSel.appendChild(new Option(p.name, String(p.id))));
+    const projectPick = searchableSelect({
+      placeholder: 'Выберите проект',
+      options: state.data.projects.map((p) => ({ value: p.id, label: p.name + (p.abbreviation ? ` (${p.abbreviation})` : '') })),
+      onChange: (value) => {
+        const proj = projectById(value);
+        if (proj && proj.managerId != null) managerSel.value = String(proj.managerId);
+      },
+    });
+    const projectSel = projectPick.root;
 
     const gradeSel = el('select');
     GRADES.forEach((g) => gradeSel.appendChild(new Option(g, g)));
@@ -837,11 +912,6 @@
     const managerSel = el('select');
     managerSel.appendChild(new Option('Выберите менеджера', ''));
     state.data.managers.forEach((m) => managerSel.appendChild(new Option(m.name, String(m.id))));
-    // auto-substitute manager when a project with one is selected
-    projectSel.addEventListener('change', () => {
-      const proj = projectById(projectSel.value);
-      if (proj && proj.managerId != null) managerSel.value = String(proj.managerId);
-    });
 
     const row1 = el('div', 'form-row');
     row1.appendChild(fieldWrap('Проект', projectSel));
@@ -862,7 +932,8 @@
     cancel.addEventListener('click', closeModal);
     const submit = el('button', 'primary', 'Отправить');
     submit.addEventListener('click', async () => {
-      if (!projectSel.value) return fail('Выберите проект');
+      const projectId = projectPick.getValue();
+      if (!projectId) return fail('Выберите проект');
       if (!gradeSel.value) return fail('Укажите грейд');
       if (!start.value || !end.value) return fail('Укажите период');
       if (dayNum(start.value) > dayNum(end.value)) return fail('Начало позже окончания');
@@ -873,7 +944,7 @@
         await api('/api/requests', {
           method: 'POST',
           body: {
-            projectId: Number(projectSel.value),
+            projectId: Number(projectId),
             grade: gradeSel.value,
             start: start.value,
             end: end.value,
@@ -2022,11 +2093,53 @@
       f.appendChild(input);
       return f;
     };
-    const nameInput = el('input'); nameInput.placeholder = 'ФИО';
+    const fail = (m) => { msg.textContent = m; msg.className = 'form-msg error'; };
+
     const emailInput = el('input'); emailInput.placeholder = 'email';
     const gradeSel = el('select');
     GRADES.forEach((g) => gradeSel.appendChild(new Option(g, g)));
-    body.appendChild(fieldWrap('ФИО', nameInput));
+
+    const fioWrap = el('div', 'searchable-select tester-search');
+    const nameInput = el('input'); nameInput.placeholder = 'ФИО (поиск в Jira)'; nameInput.autocomplete = 'off';
+    const panel = el('div', 'dd-panel hidden jira-user-panel');
+    const list = el('div', 'dd-list');
+    panel.appendChild(list);
+    fioWrap.appendChild(nameInput);
+    fioWrap.appendChild(panel);
+
+    let pickedJira = null;
+    let searchTimer = null;
+    nameInput.addEventListener('input', () => {
+      pickedJira = null;
+      const q = nameInput.value.trim();
+      clearTimeout(searchTimer);
+      if (!q) { panel.classList.add('hidden'); list.innerHTML = ''; return; }
+      searchTimer = setTimeout(async () => {
+        const users = await searchJiraUsers(q);
+        list.innerHTML = '';
+        if (!users.length) {
+          list.appendChild(el('div', 'dd-empty', 'В Jira не найдено — можно создать своего.'));
+          panel.classList.remove('hidden');
+          return;
+        }
+        users.forEach((u) => {
+          const row = el('div', 'check-item');
+          const label = u.displayName + (u.emailAddress ? ` · ${u.emailAddress}` : '');
+          row.appendChild(el('span', null, label));
+          row.addEventListener('click', () => {
+            nameInput.value = u.displayName || u.name || '';
+            emailInput.value = u.emailAddress || '';
+            pickedJira = u;
+            panel.classList.add('hidden');
+          });
+          list.appendChild(row);
+        });
+        panel.classList.remove('hidden');
+      }, 250);
+    });
+    document.addEventListener('click', (e) => { if (!fioWrap.contains(e.target)) panel.classList.add('hidden'); });
+
+    body.appendChild(fieldWrap('ФИО', fioWrap));
     body.appendChild(fieldWrap('Email', emailInput));
     body.appendChild(fieldWrap('Грейд', gradeSel));
     body.appendChild(msg);
@@ -2037,13 +2150,22 @@
     cancel.addEventListener('click', closeModal);
     const submit = el('button', 'primary', 'Создать');
     submit.addEventListener('click', async () => {
-      if (!nameInput.value.trim()) { msg.textContent = 'Укажите ФИО'; msg.className = 'form-msg error'; return; }
+      const name = nameInput.value.trim();
+      if (!name) return fail('Укажите ФИО');
+      const email = emailInput.value.trim();
+      const dup = findPortalUser(name, email);
+      if (dup) {
+        toast('Уже есть в реестре — открываем карточку.');
+        closeModal();
+        openUserCard(dup.id);
+        return;
+      }
       try {
-        const u = await api('/api/users', { method: 'POST', body: { name: nameInput.value.trim(), grade: gradeSel.value, email: emailInput.value.trim() } });
+        const u = await api('/api/users', { method: 'POST', body: { name, grade: gradeSel.value, email } });
         closeModal();
         await loadData();
         openUserCard(u.id);
-      } catch (e) { msg.textContent = e.message; msg.className = 'form-msg error'; }
+      } catch (e) { fail(e.message); }
     });
     footer.appendChild(cancel);
     footer.appendChild(submit);
