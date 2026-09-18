@@ -1690,25 +1690,26 @@
     const gathered = [];
     const seen = new Set();
     let totalIssues = 0;
-    const PER_PROJECT = 500;
+    const PER_PROJECT = 400;
+    const PAGE = 200;
     for (const key of keys) {
       try {
         let startAt = 0;
-        for (let page = 0; page < 3; page++) {
-          const query = `project = "${key}"` + asgPart;
-          const res = await api('/api/jira/search', { method: 'POST', body: { projectKey: '', jql: query, maxResults: 200, startAt } });
+        for (let page = 0; page < 4; page++) {
+          const query = `project = "${key}" AND sprint in openSprints() AND issuetype = "Задача"` + asgPart;
+          const res = await api('/api/jira/search', { method: 'POST', body: { projectKey: '', jql: query, maxResults: PAGE, startAt } });
           totalIssues += Number(res.total) || 0;
           const arr = res.issues || [];
           arr.forEach((it) => {
             if (!seen.has(it.key)) { seen.add(it.key); gathered.push(it); }
           });
-          if (arr.length < 200 || gathered.length >= PER_PROJECT) break;
+          if (arr.length < PAGE || gathered.length >= PER_PROJECT) break;
           startAt += arr.length;
         }
       } catch (e) { /* проект недоступен */ }
     }
     jiraIssues = gathered;
-    jiraStatus('JQL: ' + partsLabel(keys) + asgPart + ' — задач: ' + totalIssues);
+    jiraStatus('JQL: ' + partsLabel(keys) + asgPart + ' — только активный спринт — задач: ' + totalIssues);
     await resolveSprints();
     fillTableFilters();
     renderJira();
