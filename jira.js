@@ -246,25 +246,28 @@ module.exports = {
     if (!keys.length) return {};
     const sprintId = await resolveSprintField(cfg);
     if (!sprintId) return {};
-    let body;
-    let res;
-    try {
-      body = {
-        jql: `project in (${keys.join(', ')}) AND sprint in openSprints()`,
-        maxResults: 200,
-        fields: ['key', sprintId],
-      };
-      res = await jiraCall('/search', cfg, { method: 'POST', body });
-    } catch (e) {
-      return {};
-    }
     const map = {};
-    const issues = (res && res.issues) || [];
-    issues.forEach((it) => {
-      const prefix = String(it.key || '').split('-')[0];
-      const name = activeSprintNameOfIssue(it);
-      if (name && !(prefix in map)) map[prefix] = name;
-    });
+    for (const key of keys) {
+      let body;
+      let res;
+      try {
+        body = {
+          jql: `project = "${key}" AND sprint in openSprints()`,
+          maxResults: 100,
+          fields: ['key', sprintId],
+        };
+        res = await jiraCall('/search', cfg, { method: 'POST', body });
+      } catch (e) {
+        continue;
+      }
+      const issues = (res && res.issues) || [];
+      let name = null;
+      for (const it of issues) {
+        if (!name) name = activeSprintNameOfIssue(it);
+        if (name) break;
+      }
+      if (name) map[key] = name;
+    }
     return map;
   },
 
