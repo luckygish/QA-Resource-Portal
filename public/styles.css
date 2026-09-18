@@ -67,6 +67,8 @@ body {
 .filters select, .filters input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 /* align reset button with the input fields across all filter bars */
 .filters button.ghost { align-self: flex-end; }
+/* keep grouped action buttons (Jira load/refresh) on one line and level with inputs */
+.filters .actions { display: flex; gap: 8px; align-items: flex-end; }
 .actions { display: flex; gap: 8px; }
 
 button {
@@ -175,7 +177,7 @@ button.small { padding: 3px 8px; font-size: 12px; }
 
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
 .field input, .field select, .field textarea {
-  padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px;
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; background: #fff;
 }
 .form-row { display: flex; flex-wrap: wrap; gap: 12px; }
 .form-row .field { flex: 1; min-width: 140px; }
@@ -219,6 +221,7 @@ button.small { padding: 3px 8px; font-size: 12px; }
 
 .link { color: var(--primary); cursor: pointer; text-decoration: underline; }
 .link:hover { color: var(--primary-hover); }
+.muted { color: var(--muted); }
 
 .cat-inline { display: flex; gap: 6px; margin-top: 6px; }
 .cat-inline input { flex: 1; }
@@ -239,3 +242,63 @@ button.small { padding: 3px 8px; font-size: 12px; }
   font-size: 14px;
 }
 .sub-tab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* Jira */
+.jira-status { margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; background: #eef3fb; color: var(--primary); font-size: 13px; }
+.jira-status.error { background: #fdecea; color: var(--danger); }
+.jira-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; align-items: flex-start; }
+.jira-metrics .jira-by-exec { flex-basis: 100%; margin-top: 0; }
+.jira-hint { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.jira-assignee-card { min-width: 200px; }
+.jira-assignee-name { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.jira-assignee-statuses { display: flex; flex-direction: column; gap: 2px; }
+.jira-status-line { font-size: 13px; color: var(--text); }
+.jira-status-warn { margin-left: 6px; color: #b3261e; font-weight: 700; }
+.jira-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 110px; }
+.jira-card-val { font-size: 22px; font-weight: 700; }
+.jira-card-label { font-size: 12px; color: var(--muted); }
+.jira-card.total .jira-card-val { color: var(--primary); }
+.jira-card.todo .jira-card-val { color: var(--muted); }
+.jira-card.progress .jira-card-val { color: var(--warn); }
+.jira-card.done .jira-card-val { color: var(--ok); }
+.jira-card.spent .jira-card-val { color: var(--primary); }
+.jira-card.est .jira-card-val { color: var(--text); }
+.jira-chips { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-top: 10px; }
+.jira-chips-title { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.chip { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 10px; background: #eef3fb; color: var(--text); font-size: 12px; }
+.jira-table-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0; overflow-x: auto; }
+.jira-table-wrap .grid { border: 0; }
+.grid td.nowrap { white-space: nowrap; }
+.grid td.nowrap .link { white-space: nowrap; }
+.grid td.proj-cell { min-width: 90px; white-space: nowrap; }
+.jira-desc { white-space: pre-wrap; color: var(--text); }
+.jira-comment { border-top: 1px solid var(--border); padding: 8px 0; }
+.jira-comment-meta { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.jira-comment-body { white-space: pre-wrap; color: var(--text); }
+
+.field-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* Jira: checkbox dropdowns (projects / assignees) + warning banner */
+.filters-jira { align-items: flex-end; }
+.filters-jira .dd-toggle, .filters-jira .actions button { height: 36px; box-sizing: border-box; }
+.dd-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.dd-label { font-size: 12px; color: var(--muted); }
+.dd { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.dd-toggle { width: 280px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-toggle:hover { background: #f0f2f5; }
+.dd-panel { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; width: 320px; background: #fff; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); padding: 6px; }
+.dd-search { width: 100%; box-sizing: border-box; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; margin-bottom: 4px; background: #fff; }
+.dd-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.dd-empty { padding: 8px; font-size: 13px; color: var(--muted); }
+.dd-chips { display: flex; flex-wrap: nowrap; gap: 4px; margin-top: 4px; min-height: 22px; align-items: center; overflow: hidden; }
+.dd-chip { display: inline-flex; align-items: center; gap: 4px; background: #eef3fb; border: 1px solid var(--border); border-radius: 10px; padding: 2px 8px; font-size: 12px; color: var(--text); white-space: nowrap; max-width: 200px; }
+.dd-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-chip-x { cursor: pointer; color: var(--muted); font-weight: 700; padding: 0 2px; flex: 0 0 auto; }
+.dd-chip-x:hover { color: #b3261e; }
+.check-item { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 6px; font-size: 13px; padding: 5px 8px; border-radius: 6px; cursor: pointer; min-width: 0; white-space: nowrap; }
+.check-item:hover { background: #eef3fb; }
+.check-item.selected { background: #e0ecff; }
+.check-item span { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.check-mark { flex: 0 0 auto !important; margin-left: 6px; color: var(--primary); font-weight: 700; }
+.jira-top { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.jira-warning { background: #fdecea; border: 1px solid #f5c2c0; color: #b3261e; padding: 8px 14px; border-radius: 6px; font-size: 13px; width: fit-content; line-height: 1.6; }

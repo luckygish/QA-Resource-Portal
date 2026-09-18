@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const seed = require('./seed');
+const jira = require('./jira');
 const { spawn } = require('child_process');
 
 // When packaged into a single .exe (pkg/SEA), __dirname points into an in-memory
@@ -66,6 +67,7 @@ function normalizeData(data) {
     if (!('isGovernmentContract' in p)) { p.isGovernmentContract = false; changed = true; }
     if (!('contractNumber' in p)) { p.contractNumber = null; changed = true; }
     if (!('managerId' in p)) { p.managerId = null; changed = true; }
+    if (!('jiraKey' in p)) { p.jiraKey = null; changed = true; }
   });
 
   // migrate request.manager (string) -> managerId, creating managers on the fly
@@ -386,6 +388,11 @@ function normalizeProjectBody(data, body) {
     out.contractNumber = String(b.contractNumber == null ? '' : b.contractNumber).trim();
   }
 
+  if (b.jiraKey !== undefined) {
+    const jk = b.jiraKey == null ? '' : String(b.jiraKey).trim().toUpperCase();
+    out.jiraKey = jk || null;
+  }
+
   if (b.managerId !== undefined) {
     if (b.managerId == null || b.managerId === '') {
       out.managerId = null;
@@ -407,6 +414,7 @@ function projectView(p) {
     isGovernmentContract: true,
     contractNumber: p.contractNumber || null,
     managerId: p.managerId != null ? p.managerId : null,
+    jiraKey: p.jiraKey || null,
   };
 }
 
@@ -435,6 +443,7 @@ app.post('/api/projects', (req, res) => {
       isGovernmentContract: true,
       contractNumber: b.contractNumber !== undefined ? b.contractNumber : null,
       managerId: b.managerId != null ? b.managerId : null,
+      jiraKey: b.jiraKey !== undefined ? b.jiraKey : null,
     };
     data.projects.push(p);
     writeData(data);
@@ -455,6 +464,7 @@ app.put('/api/projects/:id', (req, res) => {
     if (b.abbreviation !== undefined) p.abbreviation = b.abbreviation;
     if (b.contractNumber !== undefined) p.contractNumber = b.contractNumber;
     if (b.managerId !== undefined) p.managerId = b.managerId;
+    if (b.jiraKey !== undefined) p.jiraKey = b.jiraKey;
     p.isGovernmentContract = true;
     writeData(data);
     res.json(projectView(p));
@@ -740,6 +750,60 @@ app.post('/api/categories', (req, res) => {
     writeData(data);
     res.json(cat);
   });
+});
+
+/* ---------------- Jira integration (read-only proxy) ---------------- */
+
+app.get('/api/jira/health', (req, res) => {
+  res.json(jira.getConfig());
+});
+
+app.get('/api/jira/projects', async (req, res) => {
+  try {
+    res.json(await jira.projects());
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
+app.post('/api/jira/search', async (req, res) => {
+  try {
+    res.json(await jira.search(req.body || {}));
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
+app.get('/api/jira/users', async (req, res) => {
+  try {
+    res.json(await jira.users());
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
+app.post('/api/jira/assignables', async (req, res) => {
+  try {
+    res.json(await jira.assignables(((req.body || {}).projectKeys) || []));
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
+app.post('/api/jira/active-sprints', async (req, res) => {
+  try {
+    res.json(await jira.activeSprints(((req.body || {}).projectKeys) || []));
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
+app.get('/api/jira/issue/:key', async (req, res) => {
+  try {
+    res.json(await jira.issue(req.params.key));
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
 });
 
 /* ---------------- static + fallback ---------------- */

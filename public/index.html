@@ -15,6 +15,7 @@
       <button class="tab" data-tab="requests">Потребности</button>
       <button class="tab" data-tab="registry">Реестр навыков</button>
       <button class="tab" data-tab="projects">Реестр проектов</button>
+      <button class="tab" data-tab="jira">Jira</button>
     </nav>
   </header>
 
@@ -205,6 +206,80 @@
         </table>
         <p id="mgr-empty" class="empty hidden">Менеджеров не найдено.</p>
       </div>
+    </section>
+
+    <!-- ======= Jira tab ======= -->
+    <section id="jira" class="tab-panel hidden">
+      <div class="toolbar">
+        <div class="filters filters-jira">
+          <div class="dd-field">
+            <span class="dd-label">Проект</span>
+            <div class="dd">
+              <button type="button" class="dd-toggle" id="jira-project-dd">— выберите проекты —</button>
+              <div class="dd-panel hidden" id="jira-project-panel">
+                <input type="text" id="jira-project-search" placeholder="Поиск проекта…" class="dd-search" />
+                <div class="dd-list" id="jira-project-list"></div>
+              </div>
+            </div>
+            <div class="dd-chips" id="jira-project-chips"></div>
+          </div>
+          <div class="dd-field">
+            <span class="dd-label">Исполнитель</span>
+            <div class="dd">
+              <button type="button" class="dd-toggle" id="jira-assignee-dd">— выберите исполнителей —</button>
+              <div class="dd-panel hidden" id="jira-assignee-panel">
+                <input type="text" id="jira-assignee-search" placeholder="Поиск исполнителя…" class="dd-search" />
+                <div class="dd-list" id="jira-assignee-list"></div>
+              </div>
+            </div>
+            <div class="dd-chips" id="jira-assignee-chips"></div>
+          </div>
+          <div class="actions">
+            <button id="jira-load" class="primary">Загрузить задачи</button>
+            <button id="jira-refresh" class="ghost">Обновить</button>
+            <button id="jira-reset" class="ghost">Сбросить</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="jira-top">
+        <div id="jira-warning" class="jira-warning hidden"></div>
+      </div>
+
+      <div id="jira-status" class="jira-status hidden"></div>
+
+      <div id="jira-metrics" class="jira-metrics hidden"></div>
+
+      <div class="toolbar">
+        <div class="filters">
+          <label>Проект <select id="jira-tbl-project"><option value="">Все</option></select></label>
+          <label>Статус <select id="jira-tbl-status"><option value="">Все</option></select></label>
+          <label>Приоритет <select id="jira-tbl-priority"><option value="">Все</option></select></label>
+        </div>
+      </div>
+
+      <div class="jira-table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Проект</th>
+              <th>Ключ</th>
+              <th>Тема</th>
+              <th>Статус</th>
+              <th>Исполнитель</th>
+              <th>Приоритет</th>
+              <th>Спринт</th>
+              <th>Создано</th>
+              <th>Обновлено</th>
+              <th>Дедлайн</th>
+              <th>Оценка</th>
+              <th>Затрачено</th>
+            </tr>
+          </thead>
+          <tbody id="jira-rows"></tbody>
+        </table>
+      </div>
+      <div id="jira-empty" class="empty hidden">Задач не найдено. Измените выбор проекта или исполнителя.</div>
     </section>
   </main>
 

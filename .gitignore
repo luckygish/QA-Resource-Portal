@@ -1,6 +1,9 @@
 # Runtime data (contains live user data; regenerated on start)
 data.json
 
+# Jira/Confluence credentials (never commit)
+.jira-config.json
+
 # Dependencies
 node_modules/
 

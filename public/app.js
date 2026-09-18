@@ -199,11 +199,12 @@
 
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    ['resources', 'requests', 'registry', 'projects'].forEach((id) => {
+    ['resources', 'requests', 'registry', 'projects', 'jira'].forEach((id) => {
       $('#' + id).classList.toggle('hidden', id !== name);
     });
     if (name === 'registry') renderRegistry();
     if (name === 'projects') switchProjectsSub(projectsSub);
+    if (name === 'jira') renderJiraTab();
   }
 
   /* ---------------- project filter options ---------------- */
@@ -998,7 +999,63 @@
       return f;
     };
 
-    const nameInput = el('input'); nameInput.value = editing ? src.name : '';
+    let pendingJiraKey = editing ? (src.jiraKey || null) : null;
+    let jiraProjectsCache = [];
+
+    const nameSelect = el('select');
+    nameSelect.appendChild(new Option('Выберите проект (поиск по Jira)', ''));
+    nameSelect.appendChild(new Option('— ввести вручную —', '__custom__'));
+
+    const nameCustom = el('input');
+    nameCustom.type = 'text';
+    nameCustom.value = editing && !src.jiraKey ? src.name : '';
+    nameCustom.placeholder = 'Название проекта вручную';
+
+    const jiraKeyInfo = el('div', 'field-hint', pendingJiraKey ? `Связан с Jira: ${pendingJiraKey}` : '');
+
+    const optionNameOf = (o) => (o && o.value && o.textContent ? String(o.textContent).split(' — ').slice(1).join(' — ') : '');
+
+    function syncNameMode() {
+      const isCustom = nameSelect.value === '__custom__';
+      nameCustom.style.display = isCustom ? 'block' : 'none';
+      if (isCustom) {
+        pendingJiraKey = null;
+        jiraKeyInfo.textContent = 'Связь с Jira не задана (вводится вручную).';
+      } else if (nameSelect.value) {
+        pendingJiraKey = nameSelect.value;
+        const o = [...nameSelect.options].find((x) => x.value === nameSelect.value);
+        jiraKeyInfo.textContent = `Связан с Jira: ${nameSelect.value} — «${optionNameOf(o)}»`;
+      } else {
+        pendingJiraKey = null;
+        jiraKeyInfo.textContent = 'Выберите проект из Jira либо введите вручную.';
+      }
+    }
+    nameSelect.addEventListener('change', syncNameMode);
+
+    function populateNameOptions() {
+      while (nameSelect.options.length > 2) nameSelect.remove(2);
+      jiraProjectsCache.forEach((p) => nameSelect.appendChild(new Option(`${p.key} — ${p.name}`, p.key)));
+      if (pendingJiraKey && [...nameSelect.options].some((o) => o.value === pendingJiraKey)) {
+        nameSelect.value = pendingJiraKey;
+      } else if (editing && !pendingJiraKey) {
+        nameSelect.value = '__custom__';
+      } else {
+        nameSelect.value = '';
+      }
+      syncNameMode();
+    }
+
+    (async () => {
+      try {
+        jiraProjectsCache = (await api('/api/jira/projects')) || [];
+      } catch (e) { /* Jira недоступна — только ручной ввод */ }
+      populateNameOptions();
+    })();
+
+    const nameField = fieldWrap('Название проекта', nameSelect);
+    nameField.appendChild(nameCustom);
+    nameField.appendChild(jiraKeyInfo);
+
     const abbrInput = el('input'); abbrInput.value = editing ? (src.abbreviation || '') : '';
 
     const contractField = el('div', 'field');
@@ -1011,7 +1068,7 @@
     state.data.managers.forEach((m) => managerSel.appendChild(new Option(m.name, String(m.id))));
     managerSel.value = editing && src.managerId != null ? String(src.managerId) : '';
 
-    body.appendChild(fieldWrap('Название проекта', nameInput));
+    body.appendChild(nameField);
     body.appendChild(fieldWrap('Аббревиатура', abbrInput));
     body.appendChild(contractField);
     body.appendChild(fieldWrap('Менеджер проекта', managerSel));
@@ -1023,11 +1080,21 @@
     cancel.addEventListener('click', closeModal);
     const submit = el('button', 'primary', 'Сохранить');
     submit.addEventListener('click', async () => {
+      let name;
+      if (nameSelect.value === '__custom__' || !nameSelect.value) {
+        name = nameCustom.value.trim();
+      } else {
+        const o = [...nameSelect.options].find((x) => x.value === nameSelect.value);
+        name = optionNameOf(o) || optionNameOf(nameSelect.selectedOptions && nameSelect.selectedOptions[0]) || '';
+      }
+      if (nameSelect.value && nameSelect.value !== '__custom__') pendingJiraKey = nameSelect.value;
+      if (nameSelect.value === '__custom__') pendingJiraKey = null;
       const payload = {
-        name: nameInput.value.trim(),
+        name,
         abbreviation: abbrInput.value.trim(),
         contractNumber: contractInput.value.trim(),
         managerId: managerSel.value || null,
+        jiraKey: pendingJiraKey || null,
       };
       try {
         if (editing) await api(`/api/projects/${src.id}`, { method: 'PUT', body: payload });
@@ -1298,7 +1365,584 @@
     openModal(modal);
   }
 
+  /* ---------------- jira integration ---------------- */
+
+  let jiraConfig = { configured: false, url: null };
+  let jiraIssues = [];
+  let jiraSprints = {};
+  let selectedJiraProjects = [];
+  let selectedJiraAssignees = [];
+  let jiraTblStatus = '';
+  let jiraTblPriority = '';
+  let jiraTblProject = '';
+
+  function fmtSec(sec) {
+    if (sec == null || sec === '') return '—';
+    const t = Number(sec) || 0;
+    const d = Math.floor(t / 86400);
+    const h = Math.floor((t % 86400) / 3600);
+    const m = Math.round((t % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(d + 'д');
+    if (h) parts.push(h + 'ч');
+    if (m) parts.push(m + 'м');
+    return parts.length ? parts.join(' ') : '0м';
+  }
+
+  function jiraStatus(msg, isError) {
+    const box = $('#jira-status');
+    box.textContent = msg;
+    box.className = 'jira-status' + (isError ? ' error' : '') + (msg ? '' : ' hidden');
+  }
+
+  function projectKeyOfIssue(key) {
+    return String(key || '').split('-')[0];
+  }
+
+  // ---------- checkbox dropdown (projects / assignees) ----------
+
+  function renderDdList(listEl, items, isChecked, onToggle, emptyText, labelOf) {
+    listEl.innerHTML = '';
+    if (!items.length) {
+      listEl.appendChild(el('div', 'dd-empty', emptyText));
+      return;
+    }
+    items.forEach((it) => {
+      const row = el('div', 'check-item' + (isChecked(it) ? ' selected' : ''));
+      row.appendChild(el('span', null, labelOf(it)));
+      if (isChecked(it)) row.appendChild(el('span', 'check-mark', '\u2713'));
+      row.addEventListener('click', () => onToggle(it, !isChecked(it)));
+      listEl.appendChild(row);
+    });
+  }
+
+  function bindDdToggle(btnId, panelId) {
+    const btn = $(btnId);
+    const panel = $(panelId);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.dd-panel').forEach((p) => { if (p !== panel) p.classList.add('hidden'); });
+      panel.classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      if (!panel.classList.contains('hidden') && !panel.contains(e.target) && !btn.contains(e.target)) panel.classList.add('hidden');
+    });
+  }
+
+  // ---------- projects ----------
+
+  let jiraProjectsCache = [];
+  let jiraProjectSearch = '';
+
+  function projectToggleLabel() {
+    if (!selectedJiraProjects.length) return '— выберите проекты —';
+    return selectedJiraProjects.length + ' · ' + selectedJiraProjects.map((p) => p.key).join(', ');
+  }
+
+  function refreshProjectToggle() {
+    $('#jira-project-dd').textContent = projectToggleLabel();
+    renderProjectChips();
+  }
+
+  function renderProjectChips() {
+    const host = $('#jira-project-chips');
+    host.innerHTML = '';
+    selectedJiraProjects.forEach((p) => {
+      const chip = el('span', 'dd-chip');
+      chip.appendChild(el('span', null, p.key || p.name));
+      const x = el('span', 'dd-chip-x', '×');
+      x.title = 'Удалить';
+      x.addEventListener('click', (e) => { e.stopPropagation(); onProjectToggle({ key: p.key, name: p.name }, false); });
+      chip.appendChild(x);
+      host.appendChild(chip);
+    });
+  }
+
+  function renderProjectList() {
+    const q = jiraProjectSearch.trim().toLowerCase();
+    const items = q
+      ? jiraProjectsCache.filter((p) => (p.key || '').toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q))
+      : jiraProjectsCache;
+    renderDdList($('#jira-project-list'), items,
+      (it) => selectedJiraProjects.some((p) => p.key === it.key),
+      onProjectToggle,
+      'Проекты не загружены.',
+      (it) => `${it.key} — ${it.name}`);
+  }
+
+  async function loadJiraProjects() {
+    try {
+      jiraProjectsCache = (await api('/api/jira/projects')) || [];
+    } catch (e) { jiraProjectsCache = []; }
+    renderProjectList();
+    refreshProjectToggle();
+  }
+
+  function onProjectToggle(it, checked) {
+    if (checked) {
+      if (!selectedJiraProjects.some((p) => p.key === it.key)) selectedJiraProjects.push({ key: it.key, name: it.name });
+    } else {
+      selectedJiraProjects = selectedJiraProjects.filter((p) => p.key !== it.key);
+    }
+    refreshProjectToggle();
+    loadAssigneesForProjects();
+    if (jiraIssues.length) renderJira();
+  }
+
+  // ---------- assignees (scoped to selected projects) ----------
+
+  let jiraAssigneePool = [];
+  let jiraAssigneeSearch = '';
+
+  function assigneeToggleLabel() {
+    if (!selectedJiraAssignees.length) return '— выберите исполнителей —';
+    return selectedJiraAssignees.length + ' · ' + selectedJiraAssignees.map((a) => a.displayName).join(', ');
+  }
+
+  function refreshAssigneeToggle() {
+    $('#jira-assignee-dd').textContent = assigneeToggleLabel();
+    renderAssigneeChips();
+  }
+
+  function renderAssigneeChips() {
+    const host = $('#jira-assignee-chips');
+    host.innerHTML = '';
+    selectedJiraAssignees.forEach((a) => {
+      const chip = el('span', 'dd-chip');
+      chip.appendChild(el('span', null, a.displayName || a.name || a.key || '?'));
+      const x = el('span', 'dd-chip-x', '×');
+      x.title = 'Удалить';
+      x.addEventListener('click', (e) => { e.stopPropagation(); onAssigneeToggle(a, false); });
+      chip.appendChild(x);
+      host.appendChild(chip);
+    });
+  }
+
+  function renderAssigneeList() {
+    const q = jiraAssigneeSearch.trim().toLowerCase();
+    const items = q
+      ? jiraAssigneePool.filter((it) => (it.displayName || '').toLowerCase().includes(q) || (it.email || '').toLowerCase().includes(q))
+      : jiraAssigneePool;
+    renderDdList($('#jira-assignee-list'), items,
+      (it) => selectedJiraAssignees.some((x) => sameIdentity(x, it)),
+      onAssigneeToggle,
+      selectedJiraProjects.length ? 'Нет исполнителей для выбранных проектов.' : 'Сначала выберите проект, чтобы увидеть исполнителей.',
+      (it) => it.displayName + (it.kind === 'portal' ? ' (портал)' : ''));
+    refreshAssigneeToggle();
+  }
+
+  async function loadAssigneesForProjects() {
+    const items = [];
+    if (selectedJiraProjects.length) {
+      try {
+        const assignables = (await api('/api/jira/assignables', { method: 'POST', body: { projectKeys: selectedJiraProjects.map((p) => p.key) } })) || [];
+        assignables.forEach((u) => items.push({ kind: 'jira', key: u.key, name: u.name, displayName: u.displayName, email: u.emailAddress || null, accountId: u.accountId || null }));
+      } catch (e) { /* участники недоступны */ }
+      state.data.users.forEach((u) => items.push({ kind: 'portal', key: null, name: u.name, displayName: u.name, email: u.email || null, accountId: null }));
+    }
+    const seen = new Set();
+    const unique = [];
+    items.forEach((it) => {
+      const ekey = (it.email || '').toString().trim().toLowerCase();
+      const nkey = (it.displayName || '').toString().trim().toLowerCase();
+      if (ekey && seen.has('e:' + ekey)) return;
+      if (ekey) seen.add('e:' + ekey);
+      if (nkey && seen.has('n:' + nkey)) return;
+      if (nkey) seen.add('n:' + nkey);
+      unique.push(it);
+    });
+    unique.sort((a, b) => ((a.kind === 'portal' ? 0 : 1) - (b.kind === 'portal' ? 0 : 1)) || (a.displayName || '').localeCompare(b.displayName || '', 'ru'));
+    selectedJiraAssignees.forEach((sel) => {
+      if (!unique.some((it) => sameIdentity(it, sel))) unique.push(sel);
+    });
+    jiraAssigneePool = unique;
+    renderAssigneeList();
+  }
+
+  function onAssigneeToggle(it, checked) {
+    if (checked) {
+      if (!selectedJiraAssignees.some((x) => sameIdentity(x, it))) selectedJiraAssignees.push(it);
+    } else {
+      selectedJiraAssignees = selectedJiraAssignees.filter((x) => !sameIdentity(x, it));
+    }
+    refreshAssigneeToggle();
+    if (jiraIssues.length) renderJira();
+  }
+
+  function assigneeJqlOperands() {
+    return selectedJiraAssignees
+      .filter((id) => id.name || id.key || id.accountId)
+      .map((id) => `"${((id.name || id.key || id.accountId) + '').replace(/"/g, '\\"')}"`);
+  }
+
+  function sameIdentity(a, b) {
+    if (a.email && b.email && String(a.email).trim().toLowerCase() === String(b.email).trim().toLowerCase()) return true;
+    if (a.key && b.key && String(a.key) === String(b.key)) return true;
+    if (a.accountId && b.accountId && String(a.accountId) === String(b.accountId)) return true;
+    if (a.displayName && b.displayName && String(a.displayName).trim().toLowerCase() === String(b.displayName).trim().toLowerCase()) return true;
+    return false;
+  }
+
+  function assigneeMatchesTask(id, assignee) {
+    if (!assignee) return false;
+    if (id.email && assignee.emailAddress) {
+      if (String(id.email).trim().toLowerCase() === String(assignee.emailAddress).trim().toLowerCase()) return true;
+    }
+    if (id.name && (assignee.name || assignee.key)) {
+      if (String(id.name).trim().toLowerCase() === String(assignee.name || assignee.key).trim().toLowerCase()) return true;
+    }
+    if (id.key && (assignee.key || assignee.name)) {
+      if (String(id.key) === String(assignee.key || assignee.name)) return true;
+    }
+    if (id.accountId && assignee.accountId) {
+      if (String(id.accountId) === String(assignee.accountId)) return true;
+    }
+    if (id.displayName && assignee.displayName) {
+      const a = String(assignee.displayName).trim().toLowerCase().replace(/\s+/g, ' ');
+      const d = String(id.displayName).trim().toLowerCase().replace(/\s+/g, ' ');
+      if (a && a === d) return true;
+    }
+    return false;
+  }
+
+  function effectiveIssues() {
+    if (!selectedJiraAssignees.length) return jiraIssues;
+    return jiraIssues.filter((it) => selectedJiraAssignees.some((id) => assigneeMatchesTask(id, it.fields && it.fields.assignee)));
+  }
+
+  function isInCurrentSprint(it) {
+    const activeSprint = jiraSprints[projectKeyOfIssue(it.key)];
+    if (!activeSprint) return false;
+    return (it._sprintNames || []).includes(activeSprint);
+  }
+
+  function sprintIssues() {
+    return effectiveIssues().filter(isInCurrentSprint);
+  }
+
+  function isRequestedTask(it) {
+    const t = it.fields && it.fields.issuetype ? it.fields.issuetype.name : '';
+    return String(t).trim().toLowerCase() === 'задача';
+  }
+
+  // Только задачи типа «Задача», находящиеся в актуальном (текущем) спринте.
+  function taskIssues() {
+    return sprintIssues().filter(isRequestedTask);
+  }
+
+  function displayIssues(list) {
+    return list.filter((it) => {
+      const f = it.fields || {};
+      if (jiraTblProject && projectKeyOfIssue(it.key) !== jiraTblProject) return false;
+      if (jiraTblStatus && (!f.status || f.status.name !== jiraTblStatus)) return false;
+      if (jiraTblPriority && (!f.priority || f.priority.name !== jiraTblPriority)) return false;
+      return true;
+    });
+  }
+
+  function fillSelect(sel, values, current) {
+    sel.innerHTML = '';
+    sel.appendChild(new Option('Все', ''));
+    values.forEach((v) => sel.appendChild(new Option(v, v)));
+    sel.value = values.indexOf(current) >= 0 ? current : '';
+  }
+
+  function fillTableFilters() {
+    const projects = [...new Set(jiraIssues.map((it) => projectKeyOfIssue(it.key)).filter(Boolean))].sort();
+    const statuses = [...new Set(jiraIssues.map((it) => it.fields && it.fields.status && it.fields.status.name).filter(Boolean))].sort();
+    const priorities = [...new Set(jiraIssues.map((it) => it.fields && it.fields.priority && it.fields.priority.name).filter(Boolean))].sort();
+    fillSelect($('#jira-tbl-project'), projects, jiraTblProject);
+    fillSelect($('#jira-tbl-status'), statuses, jiraTblStatus);
+    fillSelect($('#jira-tbl-priority'), priorities, jiraTblPriority);
+  }
+
+  async function resolveSprints() {
+    try {
+      const keys = [...new Set(jiraIssues.map((it) => projectKeyOfIssue(it.key)).filter(Boolean))];
+      if (!keys.length) return;
+      const res = await api('/api/jira/active-sprints', { method: 'POST', body: { projectKeys: keys } });
+      jiraSprints = res || {};
+    } catch (e) { /* спринты опциональны */ }
+  }
+
+  async function renderJiraTab() {
+    if (!jiraConfig.configured) {
+      try { jiraConfig = await api('/api/jira/health'); } catch (e) { /* ignore */ }
+    }
+    loadJiraProjects();
+    loadAssigneesForProjects();
+    if (!jiraConfig.configured) {
+      jiraStatus('Jira не настроена на сервере: укажите JIRA_URL и JIRA_PERSONAL_TOKEN.', true);
+      return;
+    }
+    if (jiraIssues.length) renderJira();
+  }
+
+  async function loadJira() {
+    jiraStatus('');
+    const keys = selectedJiraProjects.map((p) => p.key);
+    if (keys.length === 0) return jiraStatus('Выберите проект.', true);
+    if (!jiraConfig.configured) {
+      try { jiraConfig = await api('/api/jira/health'); } catch (e) { /* ignore */ }
+    }
+    if (!jiraConfig.configured) return jiraStatus('Jira не настроена.', true);
+    const asgPart = selectedJiraAssignees.length ? ' AND assignee in (' + assigneeJqlOperands().join(', ') + ')' : '';
+    const gathered = [];
+    const seen = new Set();
+    let totalIssues = 0;
+    const PER_PROJECT = 500;
+    for (const key of keys) {
+      try {
+        let startAt = 0;
+        for (let page = 0; page < 3; page++) {
+          const query = `project = "${key}"` + asgPart;
+          const res = await api('/api/jira/search', { method: 'POST', body: { projectKey: '', jql: query, maxResults: 200, startAt } });
+          totalIssues += Number(res.total) || 0;
+          const arr = res.issues || [];
+          arr.forEach((it) => {
+            if (!seen.has(it.key)) { seen.add(it.key); gathered.push(it); }
+          });
+          if (arr.length < 200 || gathered.length >= PER_PROJECT) break;
+          startAt += arr.length;
+        }
+      } catch (e) { /* проект недоступен */ }
+    }
+    jiraIssues = gathered;
+    jiraStatus('JQL: ' + partsLabel(keys) + asgPart + ' — задач: ' + totalIssues);
+    await resolveSprints();
+    fillTableFilters();
+    renderJira();
+  }
+
+  function partsLabel(keys) {
+    return 'project in (' + keys.map((k) => `"${k}"`).join(', ') + ')';
+  }
+
+  function jiraMetrics(list) {
+    const m = { total: list.length, done: 0, progress: 0, todo: 0, byStatus: {}, byAssignee: {}, aggSpent: 0, aggEst: 0 };
+    list.forEach((it) => {
+      const f = it.fields || {};
+      const cat = f.status && f.status.statusCategory ? f.status.statusCategory.key : null;
+      const stName = f.status && f.status.name ? f.status.name : '—';
+      if (cat === 'done') m.done += 1;
+      else if (String(stName).trim().toLowerCase() === 'тестирование') m.progress += 1;
+      else m.todo += 1;
+      m.byStatus[stName] = (m.byStatus[stName] || 0) + 1;
+      const aName = f.assignee && f.assignee.displayName ? f.assignee.displayName : 'Не назначен';
+      m.byAssignee[aName] = (m.byAssignee[aName] || 0) + 1;
+      if (f.aggregatetimespent) m.aggSpent += Number(f.aggregatetimespent) || 0;
+      if (f.aggregatetimeestimate) m.aggEst += Number(f.aggregatetimeestimate) || 0;
+    });
+    m.byStatus = Object.entries(m.byStatus).sort((a, b) => b[1] - a[1]);
+    m.byAssignee = Object.entries(m.byAssignee).sort((a, b) => b[1] - a[1]);
+    return m;
+  }
+
+  function jiraMetricCard(cls, value, label) {
+    const c = el('div', 'jira-card ' + cls);
+    c.appendChild(el('div', 'jira-card-val', String(value)));
+    c.appendChild(el('div', 'jira-card-label', label));
+    return c;
+  }
+
+  function renderJiraWarning() {
+    const host = $('#jira-warning');
+    const list = taskIssues();
+    const warnings = [];
+    selectedJiraAssignees.forEach((id) => {
+      const counts = {};
+      list.forEach((it) => {
+        const f = it.fields || {};
+        if (!assigneeMatchesTask(id, f.assignee)) return;
+        const cat = f.status && f.status.statusCategory ? f.status.statusCategory.key : null;
+        if (cat === 'done') return;
+        const st = (f.status && f.status.name) || '—';
+        if (String(st).trim().toLowerCase() === 'сделать') return;
+        counts[st] = (counts[st] || 0) + 1;
+      });
+      Object.entries(counts).forEach(([st, n]) => {
+        if (n > 5) warnings.push({ name: id.displayName, st, n });
+      });
+    });
+    if (warnings.length) {
+      host.innerHTML = warnings.map((w) => `⚠ ${w.name}: ${w.n} задач в «${w.st}»`).join('<br>');
+      host.classList.remove('hidden');
+    } else {
+      host.classList.add('hidden');
+    }
+  }
+
+  function renderJira() {
+    const eff = taskIssues();
+    const host = $('#jira-metrics');
+    host.innerHTML = '';
+    host.classList.remove('hidden');
+
+    if (!selectedJiraAssignees.length) {
+      host.appendChild(el('div', 'jira-hint', 'Выберите исполнителей для статистики.'));
+    } else {
+      const m = jiraMetrics(eff);
+      const byAssignee = el('div', 'jira-chips jira-by-exec');
+      byAssignee.appendChild(el('div', 'jira-chips-title', 'По исполнителям'));
+      m.byAssignee.slice(0, 20).forEach(([k, n]) => byAssignee.appendChild(el('span', 'chip', `${k}: ${n}`)));
+      host.appendChild(byAssignee);
+
+      const statusOrder = [...new Set(eff.map((it) => ((it.fields && it.fields.status && it.fields.status.name) || '—')))].sort((a, b) => a.localeCompare(b, 'ru'));
+
+      selectedJiraAssignees.forEach((id) => {
+        const mine = eff.filter((it) => assigneeMatchesTask(id, it.fields && it.fields.assignee));
+        if (!mine.length) return;
+        const bySt = {};
+        mine.forEach((it) => {
+          const st = (it.fields && it.fields.status && it.fields.status.name) || '—';
+          bySt[st] = (bySt[st] || 0) + 1;
+        });
+        const card = el('div', 'jira-card jira-assignee-card');
+        card.appendChild(el('div', 'jira-assignee-name', `${id.displayName} — всего ${mine.length}`));
+        const ul = el('div', 'jira-assignee-statuses');
+        statusOrder.forEach((st) => {
+          const n = bySt[st] || 0;
+          const line = el('div', 'jira-status-line');
+          line.appendChild(el('span', null, `${st}: ${n}`));
+          const norm = String(st).trim().toLowerCase();
+          if (n > 5 && norm !== 'сделать' && norm !== 'закрыто') line.appendChild(el('span', 'jira-status-warn', '\u26A0'));
+          ul.appendChild(line);
+        });
+        card.appendChild(ul);
+        host.appendChild(card);
+      });
+    }
+
+    renderJiraWarning();
+
+    const list = displayIssues(eff);
+    const tbody = $('#jira-rows');
+    tbody.innerHTML = '';
+    list.forEach((it) => {
+      const f = it.fields || {};
+      const tr = el('tr');
+      tr.addEventListener('click', () => openJiraIssue(it.key));
+
+      const keyTd = el('td', 'nowrap');
+      keyTd.appendChild(el('span', 'link', it.key));
+      const statusName = (f.status && f.status.name) || '—';
+      const stCls = (f.status && f.status.statusCategory && f.status.statusCategory.key === 'done') ? 'free'
+        : (f.status && f.status.statusCategory && f.status.statusCategory.key === 'inprogress') ? 'partial' : 'gray';
+      const statusTd = el('td');
+      statusTd.appendChild(el('span', 'badge ' + stCls, statusName));
+
+      tr.appendChild(el('td', 'proj-cell nowrap', projectKeyOfIssue(it.key)));
+      tr.appendChild(keyTd);
+      tr.appendChild(el('td', null, f.summary || '—'));
+      tr.appendChild(statusTd);
+      const assignee = f.assignee && f.assignee.displayName ? f.assignee.displayName : 'Не назначен';
+      tr.appendChild(el('td', null, assignee));
+      tr.appendChild(el('td', null, (f.priority && f.priority.name) || '—'));
+      tr.appendChild(el('td', null, jiraSprints[projectKeyOfIssue(it.key)] || '—'));
+      tr.appendChild(el('td', null, fmtDate(f.created)));
+      tr.appendChild(el('td', null, fmtDate(f.updated)));
+      tr.appendChild(el('td', null, f.duedate ? fmtDate(f.duedate) : '—'));
+      tr.appendChild(el('td', null, fmtSec(f.aggregatetimeestimate)));
+      tr.appendChild(el('td', null, fmtSec(f.aggregatetimespent)));
+      tbody.appendChild(tr);
+    });
+    $('#jira-empty').classList.toggle('hidden', list.length > 0);
+  }
+
+  async function openJiraIssue(key) {
+    if (!jiraConfig.configured) return;
+    try {
+      const it = await api('/api/jira/issue/' + encodeURIComponent(key));
+      const f = it.fields || {};
+
+      const modal = el('div', 'modal');
+      const header = el('div', 'modal-header');
+      header.appendChild(el('h2', null, `${it.key} — ${f.summary || ''}`));
+      modal.appendChild(header);
+
+      const body = el('div', 'modal-body');
+      const meta = el('div');
+      meta.appendChild(el('div', 'meta', `Статус: ${(f.status && f.status.name) || '—'}`));
+      meta.appendChild(el('div', 'meta', `Исполнитель: ${(f.assignee && f.assignee.displayName) || 'Не назначен'}`));
+      meta.appendChild(el('div', 'meta', `Докладчик: ${(f.reporter && f.reporter.displayName) || '—'}`));
+      meta.appendChild(el('div', 'meta', `Приоритет: ${(f.priority && f.priority.name) || '—'}`));
+      meta.appendChild(el('div', 'meta', `Дедлайн: ${f.duedate ? fmtDate(f.duedate) : '—'}`));
+      meta.appendChild(el('div', 'meta', `Затрачено: ${fmtSec(f.aggregatetimespent)}`));
+      body.appendChild(meta);
+
+      if (f.description) {
+        body.appendChild(el('div', 'section-title', 'Описание'));
+        const p = el('p', 'jira-desc');
+        p.textContent = f.description;
+        body.appendChild(p);
+      }
+
+      if (f.comment && f.comment.comments && f.comment.comments.length) {
+        body.appendChild(el('div', 'section-title', `Комментарии (${f.comment.comments.length})`));
+        f.comment.comments.forEach((c) => {
+          const cb = el('div', 'jira-comment');
+          const who = (c.author && c.author.displayName) || '—';
+          cb.appendChild(el('div', 'jira-comment-meta', `${who} · ${fmtDate(c.created)}`));
+          const text = el('div', 'jira-comment-body');
+          text.textContent = c.body || '';
+          cb.appendChild(text);
+          body.appendChild(cb);
+        });
+      }
+
+      modal.appendChild(body);
+
+      const footer = el('div', 'modal-footer');
+      if (jiraConfig.url) {
+        const link = el('a', 'button primary', 'Открыть в Jira');
+        link.href = jiraConfig.url + '/browse/' + encodeURIComponent(it.key);
+        link.target = '_blank';
+        link.rel = 'noopener';
+        footer.appendChild(link);
+      }
+      const close = el('button', null, 'Закрыть');
+      close.addEventListener('click', closeModal);
+      footer.appendChild(close);
+      modal.appendChild(footer);
+
+      openModal(modal);
+    } catch (e) {
+      toast('Ошибка загрузки задачи: ' + e.message, 'error');
+    }
+  }
+
   /* ---------------- filters binding ---------------- */
+
+  function resetJira() {
+    selectedJiraProjects = [];
+    selectedJiraAssignees = [];
+    jiraAssigneeSearch = '';
+    jiraProjectSearch = '';
+    jiraTblStatus = '';
+    jiraTblPriority = '';
+    jiraTblProject = '';
+    jiraIssues = [];
+    jiraSprints = {};
+    jiraAssigneePool = [];
+    $('#jira-project-search').value = '';
+    $('#jira-assignee-search').value = '';
+    $('#jira-project-dd').textContent = '— выберите проекты —';
+    $('#jira-assignee-dd').textContent = '— выберите исполнителей —';
+    $('#jira-project-chips').innerHTML = '';
+    $('#jira-assignee-chips').innerHTML = '';
+    renderProjectList();
+    renderAssigneeList();
+    fillTableFilters();
+    $('#jira-status').classList.add('hidden');
+    const metrics = $('#jira-metrics');
+    metrics.classList.add('hidden');
+    metrics.innerHTML = '';
+    $('#jira-warning').classList.add('hidden');
+    $('#jira-rows').innerHTML = '';
+    const empty = $('#jira-empty');
+    empty.classList.remove('hidden');
+    empty.textContent = 'Задач не найдено. Измените выбор проекта или исполнителя.';
+  }
 
   function bindFilters() {
     for (const sel of ['filter-grade', 'filter-project', 'filter-status', 'filter-from', 'filter-to']) {
@@ -1350,6 +1994,16 @@
       renderManagers();
     });
     $('#mgr-add').addEventListener('click', () => openManagerCard(null));
+    $('#jira-load').addEventListener('click', loadJira);
+    $('#jira-refresh').addEventListener('click', loadJira);
+    $('#jira-reset').addEventListener('click', resetJira);
+    bindDdToggle('#jira-project-dd', '#jira-project-panel');
+    bindDdToggle('#jira-assignee-dd', '#jira-assignee-panel');
+    $('#jira-project-search').addEventListener('input', (e) => { jiraProjectSearch = e.target.value; renderProjectList(); });
+    $('#jira-assignee-search').addEventListener('input', (e) => { jiraAssigneeSearch = e.target.value; renderAssigneeList(); });
+    $('#jira-tbl-project').addEventListener('change', (e) => { jiraTblProject = e.target.value; if (jiraIssues.length) renderJira(); });
+    $('#jira-tbl-status').addEventListener('change', (e) => { jiraTblStatus = e.target.value; if (jiraIssues.length) renderJira(); });
+    $('#jira-tbl-priority').addEventListener('change', (e) => { jiraTblPriority = e.target.value; if (jiraIssues.length) renderJira(); });
   }
 
   function openTesterForm() {
