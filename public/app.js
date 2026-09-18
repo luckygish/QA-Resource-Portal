@@ -1072,58 +1072,95 @@
 
     let pendingJiraKey = editing ? (src.jiraKey || null) : null;
     let jiraProjectsCache = [];
-
-    const nameSelect = el('select');
-    nameSelect.appendChild(new Option('Выберите проект (поиск по Jira)', ''));
-    nameSelect.appendChild(new Option('— ввести вручную —', '__custom__'));
+    let nameMode = pendingJiraKey || (editing && !pendingJiraKey ? '__custom__' : '');
+    const jiraNames = {};
 
     const nameCustom = el('input');
     nameCustom.type = 'text';
     nameCustom.value = editing && !src.jiraKey ? src.name : '';
     nameCustom.placeholder = 'Название проекта вручную';
+    nameCustom.style.display = nameMode === '__custom__' ? 'block' : 'none';
 
     const jiraKeyInfo = el('div', 'field-hint', pendingJiraKey ? `Связан с Jira: ${pendingJiraKey}` : '');
 
-    const optionNameOf = (o) => (o && o.value && o.textContent ? String(o.textContent).split(' — ').slice(1).join(' — ') : '');
+    const nameWrap = el('div', 'searchable-select');
+    const nameBtn = el('button', 'dd-toggle'); nameBtn.type = 'button'; nameBtn.textContent = 'Выберите проект (поиск по Jira)';
+    const namePanel = el('div', 'dd-panel hidden');
+    const nameSearch = el('input', 'dd-search'); nameSearch.placeholder = 'Поиск по Jira…';
+    const nameList = el('div', 'dd-list');
+    namePanel.appendChild(nameSearch);
+    namePanel.appendChild(nameList);
+    nameWrap.appendChild(nameBtn);
+    nameWrap.appendChild(namePanel);
 
-    function syncNameMode() {
-      const isCustom = nameSelect.value === '__custom__';
-      nameCustom.style.display = isCustom ? 'block' : 'none';
-      if (isCustom) {
+    const nameLabelOf = (p) => `${p.key} — ${p.name}`;
+
+    function renderNameList(q) {
+      nameList.innerHTML = '';
+      const ql = String(q || '').toLowerCase();
+
+      const manualRow = el('div', 'check-item' + (nameMode === '__custom__' ? ' selected' : ''));
+      manualRow.appendChild(el('span', null, '— ввести вручную —'));
+      if (nameMode === '__custom__') manualRow.appendChild(el('span', 'check-mark', '\u2713'));
+      manualRow.addEventListener('click', () => selectName('__custom__'));
+      nameList.appendChild(manualRow);
+
+      const items = ql ? jiraProjectsCache.filter((p) => (p.key + ' ' + p.name).toLowerCase().includes(ql)) : jiraProjectsCache;
+      if (!items.length && !ql) nameList.appendChild(el('div', 'dd-empty', 'Проекты Jira не загружены.'));
+      items.forEach((p) => {
+        const row = el('div', 'check-item' + (nameMode === p.key ? ' selected' : ''));
+        row.appendChild(el('span', null, nameLabelOf(p)));
+        if (nameMode === p.key) row.appendChild(el('span', 'check-mark', '\u2713'));
+        row.addEventListener('click', () => selectName(p.key));
+        nameList.appendChild(row);
+      });
+    }
+
+    function selectName(mode) {
+      nameMode = mode;
+      if (mode === '__custom__') {
         pendingJiraKey = null;
+        nameCustom.style.display = 'block';
+        nameBtn.textContent = '— ввести вручную —';
         jiraKeyInfo.textContent = 'Связь с Jira не задана (вводится вручную).';
-      } else if (nameSelect.value) {
-        pendingJiraKey = nameSelect.value;
-        const o = [...nameSelect.options].find((x) => x.value === nameSelect.value);
-        jiraKeyInfo.textContent = `Связан с Jira: ${nameSelect.value} — «${optionNameOf(o)}»`;
+      } else if (mode) {
+        pendingJiraKey = mode;
+        nameCustom.style.display = 'none';
+        const p = jiraProjectsCache.find((x) => x.key === mode);
+        nameBtn.textContent = p ? nameLabelOf(p) : mode;
+        jiraKeyInfo.textContent = `Связан с Jira: ${mode}${p ? ` — «${p.name}»` : ''}`;
       } else {
         pendingJiraKey = null;
+        nameCustom.style.display = 'none';
+        nameBtn.textContent = 'Выберите проект (поиск по Jira)';
         jiraKeyInfo.textContent = 'Выберите проект из Jira либо введите вручную.';
       }
+      namePanel.classList.add('hidden');
+      nameSearch.value = '';
     }
-    nameSelect.addEventListener('change', syncNameMode);
 
-    function populateNameOptions() {
-      while (nameSelect.options.length > 2) nameSelect.remove(2);
-      jiraProjectsCache.forEach((p) => nameSelect.appendChild(new Option(`${p.key} — ${p.name}`, p.key)));
-      if (pendingJiraKey && [...nameSelect.options].some((o) => o.value === pendingJiraKey)) {
-        nameSelect.value = pendingJiraKey;
-      } else if (editing && !pendingJiraKey) {
-        nameSelect.value = '__custom__';
-      } else {
-        nameSelect.value = '';
-      }
-      syncNameMode();
+    function showName() {
+      document.querySelectorAll('.searchable-select .dd-panel').forEach((p) => { if (p !== namePanel) p.classList.add('hidden'); });
+      namePanel.classList.remove('hidden');
+      renderNameList('');
+      nameSearch.focus();
     }
+    nameBtn.addEventListener('click', (e) => { e.stopPropagation(); namePanel.classList.contains('hidden') ? showName() : namePanel.classList.add('hidden'); });
+    nameSearch.addEventListener('input', () => renderNameList(nameSearch.value.trim().toLowerCase()));
+    document.addEventListener('click', (e) => { if (!nameWrap.contains(e.target)) namePanel.classList.add('hidden'); });
 
     (async () => {
       try {
         jiraProjectsCache = (await api('/api/jira/projects')) || [];
       } catch (e) { /* Jira недоступна — только ручной ввод */ }
-      populateNameOptions();
+      jiraProjectsCache.forEach((p) => { jiraNames[p.key] = p.name; });
+      if (nameMode && nameMode !== '__custom__') {
+        const p = jiraProjectsCache.find((x) => x.key === nameMode);
+        nameBtn.textContent = p ? nameLabelOf(p) : nameMode;
+      }
     })();
 
-    const nameField = fieldWrap('Название проекта', nameSelect);
+    const nameField = fieldWrap('Название проекта', nameWrap);
     nameField.appendChild(nameCustom);
     nameField.appendChild(jiraKeyInfo);
 
@@ -1152,14 +1189,12 @@
     const submit = el('button', 'primary', 'Сохранить');
     submit.addEventListener('click', async () => {
       let name;
-      if (nameSelect.value === '__custom__' || !nameSelect.value) {
+      if (!nameMode || nameMode === '__custom__') {
         name = nameCustom.value.trim();
       } else {
-        const o = [...nameSelect.options].find((x) => x.value === nameSelect.value);
-        name = optionNameOf(o) || optionNameOf(nameSelect.selectedOptions && nameSelect.selectedOptions[0]) || '';
+        name = jiraNames[nameMode] || nameMode;
       }
-      if (nameSelect.value && nameSelect.value !== '__custom__') pendingJiraKey = nameSelect.value;
-      if (nameSelect.value === '__custom__') pendingJiraKey = null;
+      pendingJiraKey = (nameMode && nameMode !== '__custom__') ? nameMode : null;
       const payload = {
         name,
         abbreviation: abbrInput.value.trim(),
