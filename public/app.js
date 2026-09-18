@@ -1622,7 +1622,8 @@
 
   function isRequestedTask(it) {
     const t = it.fields && it.fields.issuetype ? it.fields.issuetype.name : '';
-    return String(t).trim().toLowerCase() === 'задача';
+    const n = String(t).trim().toLowerCase();
+    return n === 'задача' || n === 'ошибка';
   }
 
   // Только задачи типа «Задача», находящиеся в актуальном (текущем) спринте.
@@ -1696,7 +1697,7 @@
       try {
         let startAt = 0;
         for (let page = 0; page < 4; page++) {
-          const query = `project = "${key}" AND sprint in openSprints() AND issuetype = "Задача"` + asgPart;
+          const query = `project = "${key}" AND sprint in openSprints() AND issuetype in ("Задача", "Ошибка")` + asgPart;
           const res = await api('/api/jira/search', { method: 'POST', body: { projectKey: '', jql: query, maxResults: PAGE, startAt } });
           totalIssues += Number(res.total) || 0;
           const arr = res.issues || [];
