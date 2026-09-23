@@ -2115,7 +2115,7 @@
   }
 
   async function loadSignalData(projectKey) {
-    return await api('/api/jira/dashboard?projectKey=' + encodeURIComponent(projectKey));
+    return await api('/api/jira/dashboard?projectKey=' + encodeURIComponent(projectKey) + '&days=90');
   }
 
   function renderDashKpi(d) {
@@ -2123,10 +2123,10 @@
     host.innerHTML = '';
     host.classList.remove('hidden');
     const k = d.kpi || {};
-    host.appendChild(dashKpiCard(k.open, 'Открыто задач'));
-    host.appendChild(dashKpiCard(k.activeBugs, 'Активных «Ошибок»'));
-    host.appendChild(dashKpiCard(k.inTesting, 'В «Тестировании»'));
-    host.appendChild(dashKpiCard(fmtSec(k.aggSpentActive), 'Затрачено (акт. спринт)'));
+    host.appendChild(dashKpiCard(k.closedTasks, 'Закрыто «Задач» за 90 дн.'));
+    host.appendChild(dashKpiCard(k.closedBugs, 'Закрыто «Ошибок» за 90 дн.'));
+    host.appendChild(dashKpiCard(k.bugsCreated, 'Заведено «Ошибок» за 90 дн.'));
+    host.appendChild(dashKpiCard(fmtSec(k.spent90), 'Затрачено времени'));
   }
 
   function renderDashCharts(d) {
@@ -2134,45 +2134,25 @@
     const names = (a) => arr(a).map((x) => x.name);
     const vals = (a) => arr(a).map((x) => x.value);
 
-    const byStatus = arr(d.byStatus);
-    if (byStatus.length) chart('dash-by-status', pieOption(names(byStatus), vals(byStatus)));
-    else emptyChart('dash-by-status', 'Нет данных');
-
     const byType = arr(d.byType);
     if (byType.length) chart('dash-by-type', pieOption(names(byType), vals(byType)));
-    else emptyChart('dash-by-type', 'Нет данных');
+    else emptyChart('dash-by-type', 'Нет данных за 90 дней');
 
     const byAssignee = arr(d.byAssignee).slice(0, 15);
-    if (byAssignee.length) chart('dash-by-assignee', barOption(names(byAssignee), [{ name: 'Задач', data: vals(byAssignee) }], false, 'задач'));
-    else emptyChart('dash-by-assignee', 'Нет данных');
+    if (byAssignee.length) chart('dash-by-assignee', barOption(names(byAssignee), [{ name: 'Закрыто', data: vals(byAssignee) }], false, 'задач'));
+    else emptyChart('dash-by-assignee', 'Нет данных за 90 дней');
 
     const byEnv = arr(d.byEnvironment);
     if (byEnv.length) chart('dash-by-env', pieOption(names(byEnv), vals(byEnv)));
-    else emptyChart('dash-by-env', 'Нет данных');
+    else emptyChart('dash-by-env', 'Нет данных за 90 дней');
 
-    const vel = arr(d.velocity);
-    if (vel.length) {
-      const vLabels = vel.map((x) => x.sprint);
-      chart('dash-velocity', barOption(vLabels, [
-        { name: 'Начато', data: vel.map((x) => x.started), stack: 's' },
-        { name: 'Доставлено', data: vel.map((x) => x.delivered), stack: 's' },
-      ], true, 'задач'));
-    } else emptyChart('dash-velocity', 'Нет закрытых спринтов');
-
-    const bd = d.burndown;
-    if (bd && (bd.total > 0 || bd.done > 0 || bd.remaining > 0)) {
-      chart('dash-burndown', {
-        color: PALETTE,
-        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (ps) => ps.map((p) => `${p.marker}${p.name}: ${fmtChartTime(p.value)}`).join('<br>') },
-        grid: { left: 16, right: 24, top: 40, bottom: 16, containLabel: true },
-        xAxis: { type: 'category', data: ['Осталось', 'Сделано'] },
-        yAxis: { type: 'value', name: 'ч' },
-        series: [
-          { name: 'Осталось', type: 'bar', barGap: '20%', data: [bd.remaining, 0], itemStyle: { color: '#ef4444' } },
-          { name: 'Сделано', type: 'bar', data: [0, bd.done], itemStyle: { color: '#10b981' } },
-        ],
-      });
-    } else emptyChart('dash-burndown', 'Нет активного спринта');
+    const bs = arr(d.bugSprints).slice(-12);
+    if (bs.length) {
+      chart('dash-bug-sprints', barOption(bs.map((x) => x.sprint), [
+        { name: 'Заведено', data: bs.map((x) => x.created) },
+        { name: 'Закрыто', data: bs.map((x) => x.closed) },
+      ], false, 'ошибок'));
+    } else emptyChart('dash-bug-sprints', 'Нет ошибок за 90 дней');
 
     const tA = arr(d.time && d.time.byAssignee).slice(0, 15);
     if (tA.length) {
@@ -2181,7 +2161,7 @@
         { name: 'Затрачено', data: tA.map((x) => hours(x.spent)) },
         { name: 'Оценка', data: tA.map((x) => hours(x.estimate)) },
       ], false, 'ч'));
-    } else emptyChart('dash-time-assignee', 'Нет данных');
+    } else emptyChart('dash-time-assignee', 'Нет данных за 90 дней');
 
     const tS = arr(d.time && d.time.byStatus);
     if (tS.length) {
@@ -2190,20 +2170,12 @@
         { name: 'Затрачено', data: tS.map((x) => hours(x.spent)) },
         { name: 'Оценка', data: tS.map((x) => hours(x.estimate)) },
       ], false, 'ч'));
-    } else emptyChart('dash-time-status', 'Нет данных');
+    } else emptyChart('dash-time-status', 'Нет данных за 90 дней');
   }
 
   function hours(sec) {
     const n = Number(sec) || 0;
     return Math.round((n / 3600) * 10) / 10;
-  }
-
-  function fmtChartTime(v) {
-    v = Number(v) || 0;
-    const h = v / 3600;
-    if (h >= 1000) return (h / 1000).toFixed(1) + 'кч';
-    if (h >= 1) return Math.round(h * 10) / 10 + 'ч';
-    return Math.round(v / 60) + 'м';
   }
 
   async function renderDashboards() {
@@ -2244,11 +2216,15 @@
     try {
       const d = await loadSignalData(k);
       if (dashProject !== k) return; // ignored stale response
-      const hasData = (d.byStatus && d.byStatus.length)
+      const hasData = (d.byAssignee && d.byAssignee.length)
+        || (d.byType && d.byType.length)
         || (d.byEnvironment && d.byEnvironment.length)
-        || (d.velocity && d.velocity.length)
-        || (d.kpi && (d.kpi.open || d.kpi.activeBugs));
-      dashWarn(d.envFieldResolved ? '' : 'Поле «Окружение» не найдено в Jira — разрез по окружению пустой.');
+        || (d.bugSprints && d.bugSprints.length)
+        || (d.kpi && d.kpi.closedTotal);
+      const warn = [];
+      if (!d.envFieldResolved) warn.push('Поле «Окружение» не найдено в Jira — разрез по окружению пустой.');
+      if (!d.requestTypeFieldResolved) warn.push('Поле «Тип заявки» не найдено — Service Task как ошибки не учитываются.');
+      dashWarn(warn.join(' '));
       if (!hasData) {
         $('#dash-kpi').classList.add('hidden');
         disposeAllCharts();

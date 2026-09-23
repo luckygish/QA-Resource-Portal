@@ -67,6 +67,7 @@ const SEARCH_FIELD_LIST = [
 
 let SPRINT_FIELD_ID = null;
 let ENV_FIELD_ID = null;
+let REQUEST_TYPE_FIELD_ID = null;
 
 async function resolveEnvironmentField(cfg) {
   if (ENV_FIELD_ID) return ENV_FIELD_ID;
@@ -84,6 +85,20 @@ async function resolveEnvironmentField(cfg) {
     ENV_FIELD_ID = null;
   }
   return ENV_FIELD_ID;
+}
+
+async function resolveRequestTypeField(cfg) {
+  if (REQUEST_TYPE_FIELD_ID) return REQUEST_TYPE_FIELD_ID;
+  try {
+    const all = (await jiraCall('/field', cfg)) || [];
+    const fields = Array.isArray(all) ? all : [];
+    const custom = fields.filter((f) => String(f.id).startsWith('customfield_'));
+    const hit = custom.find((f) => /тип(\s+)?заявки|request type/i.test(String(f.name || '')));
+    REQUEST_TYPE_FIELD_ID = (hit || null) && hit.id;
+  } catch (e) {
+    REQUEST_TYPE_FIELD_ID = null;
+  }
+  return REQUEST_TYPE_FIELD_ID;
 }
 
 async function resolveSprintField(cfg) {
@@ -155,10 +170,36 @@ const DASHBOARD_BASE_FIELDS = SEARCH_FIELD_LIST.concat([
 ]);
 
 const NO_ENV = 'Без окружения';
+const DEFAULT_DAYS = 90;
+const BUG_EXCLUDED_RESOLUTIONS = ['Не воспроизводится', 'Не является дефектом', 'Canceled', 'Дубликат', 'Не нуждается в исправлении'];
 
 function toNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function isoDate(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// [from, to] date window: last N full days ending today (UTC date granularity).
+function dateWindow(days) {
+  const n = Math.max(1, Math.min(365, Number(days) || DEFAULT_DAYS));
+  const to = new Date();
+  to.setUTCHours(0, 0, 0, 0);
+  const from = new Date(to.getTime() - (n - 1) * 86400000);
+  return { from: isoDate(from), to: isoDate(to), days: n };
+}
+
+// Bug-issuetype JQL piece: классические «Ошибки» + Service Task с «Тип заявки» = Ошибка
+// (аналог примера пользователя), с фолбэком, если поле «Тип заявки» не резолвится.
+function bugTypeJql(rtId) {
+  if (!rtId) return `issuetype = "Ошибка"`;
+  const cf = String(rtId).replace(/^customfield_/i, '');
+  return `(issuetype = "Ошибка" OR (issuetype = "Service Task" AND cf[${cf}] = "Ошибка"))`;
 }
 
 // Paginated search that returns all issues of a matching jql (capped).
@@ -206,11 +247,6 @@ function isDone(it) {
   return issueStatusCategory(it) === 'done';
 }
 
-function isOpenIt(it) {
-  const f = it && it.fields;
-  return !(f && f.resolution);
-}
-
 function issueTypeName(it) {
   const n = (it && it.fields && it.fields.issuetype && it.fields.issuetype.name) || 'Проч.';
   const l = String(n).trim().toLowerCase();
@@ -229,6 +265,11 @@ function issuePriority(it) {
   return (p && p.name) || 'Не задан';
 }
 
+function issueResolution(it) {
+  const r = it && it.fields && it.fields.resolution;
+  return (r && r.name) || null;
+}
+
 function issueEnv(it, envId) {
   if (!envId) return NO_ENV;
   const v = it && it.fields && it.fields[envId];
@@ -242,8 +283,8 @@ function counts(map, key) {
   map[key] = (map[key] || 0) + 1;
 }
 
-function sprintNameOfIssue(it) {
-  return (it && it._sprintNames && it._sprintNames[0]) || null;
+function sprintNamesOfIssueArr(it) {
+  return (it && it._sprintNames) || [];
 }
 
 function sumTime(it, field) {
@@ -257,87 +298,83 @@ async function dashboard(projectKey, opts = {}) {
   if (!key) throw new Error('Укажите projectKey');
 
   const envId = await resolveEnvironmentField(cfg);
-  const cap = Number(opts.cap) || 1000;
+  const rtId = await resolveRequestTypeField(cfg);
+  const cap = Number(opts.cap) || 2000;
+  const { from, to, days } = dateWindow(opts.days);
+  const bugType = bugTypeJql(rtId);
+  const bugRes = BUG_EXCLUDED_RESOLUTIONS.map((r) => `"${r}"`).join(', ');
 
-  const [active, unresolved, closed] = await Promise.all([
-    searchAll(cfg, `project = "${key}" AND sprint in openSprints()`, { cap: 500 }),
-    searchAll(cfg, `project = "${key}" AND resolution is EMPTY`, { cap: 500 }),
-    searchAll(cfg, `project = "${key}" AND sprint in closedSprints()`, { cap }),
+  // Окно по resolve: закрытые Задача/Ошибка за последние N дней
+  const resolvedJql = `project = "${key}" AND issuetype in ("Задача", "Ошибка") AND resolutiondate >= "${from}" AND resolutiondate <= "${to}"`;
+  // Отчёт по окружению: ошибки, заведённые за окно (пример пользователя)
+  const envJql = `project = "${key}" AND ${bugType} AND resolution not in (${bugRes}) AND created >= "${from} 00:00" AND created <= "${to} 23:59"`;
+  // Ошибки: заведённые или закрытые за окно — для разбивки по спринтам
+  const sprintBugsJql = `project = "${key}" AND ${bugType} AND (created >= "${from} 00:00" AND created <= "${to} 23:59" OR resolutiondate >= "${from}" AND resolutiondate <= "${to}")`;
+
+  const [resolved, envBugs, sprintBugs] = await Promise.all([
+    searchAll(cfg, resolvedJql, { cap }),
+    searchAll(cfg, envJql, { cap }),
+    searchAll(cfg, sprintBugsJql, { cap }),
   ]);
 
-  // ---- Block A: summary / byStatus / byType / byAssignee / byPriority / byEnvironment
-  const kpi = { open: 0, activeBugs: 0, inTesting: 0, aggSpentActive: 0 };
-  const byStatus = {};
-  const byType = {};
+  // ---- KPI (за окно)
+  let closedTasks = 0;
+  let closedBugs = 0;
+  let spent90 = 0;
+  resolved.forEach((it) => {
+    if (issueTypeName(it) === 'Задача') closedTasks += 1;
+    else if (issueTypeName(it) === 'Ошибка') closedBugs += 1;
+    spent90 += sumTime(it, 'aggregatetimespent') || sumTime(it, 'timespent');
+  });
+  const kpi = {
+    days,
+    closedTasks,
+    closedBugs,
+    closedTotal: resolved.length,
+    bugsCreated: envBugs.length,
+    spent90,
+  };
+
+  // ---- Загрузка по исполнителям: кто закрыл (Задача/Ошибка) за окно
   const byAssignee = {};
-  const byPriority = {};
+  resolved.forEach((it) => counts(byAssignee, issueAssignee(it)));
+  // ---- По типам (закрытые за окно)
+  const byType = {};
+  resolved.forEach((it) => counts(byType, issueTypeName(it)));
+
+  // ---- Разрез по окружению (ошибки за окно, по env-полю)
   const byEnvironment = {};
+  envBugs.forEach((it) => counts(byEnvironment, issueEnv(it, envId)));
 
-  let aggSpentActive = 0;
-  active.forEach((it) => {
-    aggSpentActive += sumTime(it, 'aggregatetimespent');
-    counts(byEnvironment, issueEnv(it, envId));
-  });
-
-  // в активном спринте: открытые ошибки
-  active.forEach((it) => {
-    if (issueTypeName(it) === 'Ошибка' && !isDone(it)) kpi.activeBugs += 1;
-  });
-
-  // unresolved: открыто задач, тестирование, по статусам/типам/исполнителю/приоритету
-  unresolved.forEach((it) => {
-    if (isOpenIt(it)) kpi.open += 1;
-    const st = issueStatusName(it);
-    if (String(st).trim().toLowerCase() === 'тестирование') kpi.inTesting += 1;
-    counts(byStatus, st);
-    counts(byType, issueTypeName(it));
-    counts(byAssignee, issueAssignee(it));
-    counts(byPriority, issuePriority(it));
-  });
-  kpi.aggSpentActive = aggSpentActive;
-
-  // ---- Block B: velocity over closed sprints + burndown of active sprint
-  const sprintDelivered = {};
-  const sprintStarted = {};
+  // ---- Ошибки по спринтам: заведённые и закрытые за окно
+  const spName = 'Без спринта';
+  const createdBySprint = {};
+  const closedBySprint = {};
   const sprintOrder = [];
-  closed.forEach((it) => {
-    const sn = sprintNameOfIssue(it);
-    if (!sn) return;
-    if (!(sn in sprintDelivered)) { sprintDelivered[sn] = 0; sprintStarted[sn] = 0; sprintOrder.push(sn); }
-    if (isDone(it)) sprintDelivered[sn] += 1;
-    else sprintStarted[sn] += 1;
-  });
-  const velocity = sprintOrder
-    .map((name) => ({ sprint: name, delivered: sprintDelivered[name], started: sprintStarted[name] }))
-    .slice(-10);
+  const stampCreated = (it) => new Date(it.fields && it.fields.created).getTime();
+  const stampResolved = (it) => new Date(it.fields && it.fields.resolutiondate).getTime();
+  const fromT = new Date(from + 'T00:00:00').getTime();
+  const toT = new Date(to + 'T23:59:59').getTime();
 
-  // burndown of active sprint
-  let remaining = 0;
-  let burndownDone = 0;
-  let burndownTotal = 0;
-  let doneCount = 0;
-  let remainCount = 0;
-  active.forEach((it) => {
-    if (isDone(it)) {
-      const sp = sumTime(it, 'aggregatetimespent') || sumTime(it, 'timespent');
-      burndownDone += sp;
-      doneCount += 1;
-      burndownTotal += sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
-    } else {
-      const rem = sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
-      remaining += rem;
-      remainCount += 1;
-      burndownTotal += rem;
-    }
+  sprintBugs.forEach((it) => {
+    const sprints = sprintNamesOfIssueArr(it);
+    if (!sprints.length) sprints.push(spName);
+    const catCreated = stampCreated(it) >= fromT && stampCreated(it) <= toT;
+    const catClosed = stampResolved(it) >= fromT && stampResolved(it) <= toT;
+    sprints.forEach((sn) => {
+      if (!(sn in createdBySprint)) { createdBySprint[sn] = 0; closedBySprint[sn] = 0; sprintOrder.push(sn); }
+      if (catCreated) createdBySprint[sn] += 1;
+      if (catClosed) closedBySprint[sn] += 1;
+    });
   });
-  const burndown = { remaining, done: burndownDone, total: burndownTotal, counts: { done: doneCount, remaining: remainCount } };
+  const bugSprints = sprintOrder.map((sn) => ({ sprint: sn, created: createdBySprint[sn], closed: closedBySprint[sn] }));
 
-  // ---- Block D: spent vs estimate by assignee and by status
+  // ---- Время (за окно закрытых)
   const timeByAssignee = {};
   const timeByStatus = {};
   let timeTotalSpent = 0;
   let timeTotalEstimate = 0;
-  active.forEach((it) => {
+  resolved.forEach((it) => {
     const spent = sumTime(it, 'aggregatetimespent') || sumTime(it, 'timespent');
     const est = sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
     timeTotalSpent += spent;
@@ -352,21 +389,18 @@ async function dashboard(projectKey, opts = {}) {
     timeByStatus[s].estimate += est;
   });
 
-  const sortDesc = (obj, key) => Object.entries(obj)
-    .map(([name, v]) => (key ? { name, value: v[key] } : { name, value: v }))
-    .sort((a, b) => b.value - a.value);
+  const toSorted = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }));
 
   return {
     projectKey: key,
+    days: { from, to, days },
     envFieldResolved: !!envId,
+    requestTypeFieldResolved: !!rtId,
     kpi,
-    byStatus: Object.entries(byStatus).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
-    byType: Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
-    byAssignee: Object.entries(byAssignee).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
-    byPriority: Object.entries(byPriority).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    byAssignee: toSorted(byAssignee),
+    byType: toSorted(byType),
     byEnvironment: Object.entries(byEnvironment).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
-    velocity,
-    burndown,
+    bugSprints,
     time: {
       byAssignee: Object.entries(timeByAssignee).map(([name, v]) => ({ name, spent: v.spent, estimate: v.estimate })),
       byStatus: Object.entries(timeByStatus).map(([name, v]) => ({ name, spent: v.spent, estimate: v.estimate })),
