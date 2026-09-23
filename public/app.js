@@ -199,13 +199,12 @@
 
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    ['resources', 'requests', 'registry', 'projects', 'jira', 'dashboards'].forEach((id) => {
+    ['resources', 'requests', 'registry', 'projects', 'jira'].forEach((id) => {
       $('#' + id).classList.toggle('hidden', id !== name);
     });
     if (name === 'registry') renderRegistry();
     if (name === 'projects') switchProjectsSub(projectsSub);
     if (name === 'jira') renderJiraTab();
-    if (name === 'dashboards') renderDashboards();
   }
 
   /* ---------------- project filter options ---------------- */
@@ -2020,243 +2019,6 @@
     }
   }
 
-  /* ---------------- dashboards ---------------- */
-
-  let dashProject = null;
-  let dashProjectPick = null;
-  let dashCharts = {};
-
-  function dashStatus(msg, isError) {
-    const box = $('#dash-status');
-    box.textContent = msg;
-    box.className = 'jira-status' + (isError ? ' error' : '') + (msg ? '' : ' hidden');
-  }
-
-  function dashWarn(msg) {
-    const w = $('#dash-warning');
-    if (msg) { w.textContent = msg; w.classList.remove('hidden'); }
-    else w.classList.add('hidden');
-  }
-
-  function chart(id, option) {
-    const elHost = $('#' + id);
-    if (!elHost) return null;
-    let inst = dashCharts[id];
-    if (!inst || inst.isDisposed()) {
-      inst = echarts.init(elHost, null, { renderer: 'canvas' });
-      dashCharts[id] = inst;
-    }
-    inst.setOption(option, true);
-    return inst;
-  }
-
-  function disposeAllCharts() {
-    Object.keys(dashCharts).forEach((id) => {
-      const c = dashCharts[id];
-      if (c && !c.isDisposed()) c.dispose();
-    });
-    dashCharts = {};
-  }
-
-  function emptyChart(id, text) {
-    const host = $('#' + id);
-    const old = dashCharts[id];
-    if (old && !old.isDisposed()) { old.dispose(); delete dashCharts[id]; }
-    host.innerHTML = '';
-    host.appendChild(el('div', 'dash-no-data', text));
-  }
-
-  const PALETTE = ['#2563eb', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316'];
-
-  function pieOption(labels, values) {
-    return {
-      color: PALETTE,
-      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' },
-      series: [{
-        type: 'pie',
-        radius: ['38%', '68%'],
-        center: ['38%', '50%'],
-        avoidLabelOverlap: true,
-        itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 1 },
-        label: { show: false },
-        emphasis: { label: { show: true, fontSize: 13, fontWeight: 'bold' } },
-        data: labels.map((name, i) => ({ name, value: values[i] })),
-      }],
-    };
-  }
-
-  function barOption(labels, series, stack, yName) {
-    return {
-      color: PALETTE,
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 16, right: 24, top: 40, bottom: 16, containLabel: true },
-      xAxis: {
-        type: 'category',
-        data: labels,
-        axisLabel: { interval: 0, rotate: labels.length > 6 ? 30 : 0 },
-      },
-      yAxis: { type: 'value', name: yName || '' },
-      series: series.map((s) => ({
-        name: s.name,
-        type: s.type || 'bar',
-        stack: stack ? s.name : undefined,
-        data: s.data,
-        itemStyle: s.type === 'line' ? { color: '#2563eb' } : undefined,
-      })),
-    };
-  }
-
-  function dashKpiCard(value, label) {
-    const c = el('div', 'jira-card dash-kpi-card');
-    c.appendChild(el('div', 'jira-card-val', String(value)));
-    c.appendChild(el('div', 'jira-card-label', label));
-    return c;
-  }
-
-  async function loadSignalData(projectKey) {
-    return await api('/api/jira/dashboard?projectKey=' + encodeURIComponent(projectKey) + '&days=90');
-  }
-
-  function renderDashKpi(d) {
-    const host = $('#dash-kpi');
-    host.innerHTML = '';
-    host.classList.remove('hidden');
-    const k = d.kpi || {};
-    host.appendChild(dashKpiCard(k.closedTasks, 'Закрыто «Задач» за 90 дн.'));
-    host.appendChild(dashKpiCard(k.closedBugs, 'Закрыто «Ошибок» за 90 дн.'));
-    host.appendChild(dashKpiCard(k.bugsCreated, 'Заведено «Ошибок» за 90 дн.'));
-    host.appendChild(dashKpiCard(fmtSec(k.spent90), 'Затрачено времени'));
-  }
-
-  function renderDashCharts(d) {
-    const arr = (v) => Array.isArray(v) ? v : [];
-    const names = (a) => arr(a).map((x) => x.name);
-    const vals = (a) => arr(a).map((x) => x.value);
-
-    const byType = arr(d.byType);
-    if (byType.length) chart('dash-by-type', pieOption(names(byType), vals(byType)));
-    else emptyChart('dash-by-type', 'Нет данных за 90 дней');
-
-    const byAssignee = arr(d.byAssignee).slice(0, 15);
-    if (byAssignee.length) chart('dash-by-assignee', barOption(names(byAssignee), [{ name: 'Закрыто', data: vals(byAssignee) }], false, 'задач'));
-    else emptyChart('dash-by-assignee', 'Нет данных за 90 дней');
-
-    const byEnv = arr(d.byEnvironment);
-    if (byEnv.length) chart('dash-by-env', pieOption(names(byEnv), vals(byEnv)));
-    else emptyChart('dash-by-env', 'Нет данных за 90 дней');
-
-    const bs = arr(d.bugSprints).slice(-12);
-    if (bs.length) {
-      chart('dash-bug-sprints', barOption(bs.map((x) => x.sprint), [
-        { name: 'Заведено', data: bs.map((x) => x.created) },
-        { name: 'Закрыто', data: bs.map((x) => x.closed) },
-      ], false, 'ошибок'));
-    } else emptyChart('dash-bug-sprints', 'Нет ошибок за 90 дней');
-
-    const tA = arr(d.time && d.time.byAssignee).slice(0, 15);
-    if (tA.length) {
-      const tLabels = tA.map((x) => x.name);
-      chart('dash-time-assignee', barOption(tLabels, [
-        { name: 'Затрачено', data: tA.map((x) => hours(x.spent)) },
-        { name: 'Оценка', data: tA.map((x) => hours(x.estimate)) },
-      ], false, 'ч'));
-    } else emptyChart('dash-time-assignee', 'Нет данных за 90 дней');
-
-    const tS = arr(d.time && d.time.byStatus);
-    if (tS.length) {
-      const tLabels = tS.map((x) => x.name);
-      chart('dash-time-status', barOption(tLabels, [
-        { name: 'Затрачено', data: tS.map((x) => hours(x.spent)) },
-        { name: 'Оценка', data: tS.map((x) => hours(x.estimate)) },
-      ], false, 'ч'));
-    } else emptyChart('dash-time-status', 'Нет данных за 90 дней');
-  }
-
-  function hours(sec) {
-    const n = Number(sec) || 0;
-    return Math.round((n / 3600) * 10) / 10;
-  }
-
-  async function renderDashboards() {
-    dashStatus('');
-    if (!dashProjectPick) {
-      dashProjectPick = searchableSelect({
-        placeholder: 'Выберите проект',
-        options: jiraProjectsCache.map((p) => ({ value: p.key, label: `${p.key} — ${p.name}` })),
-        onChange: (val) => { dashProject = val; loadDashboard(); },
-      });
-      $('#dash-project-select').appendChild(dashProjectPick.root);
-    }
-    if (!jiraProjectsCache.length) {
-      try { jiraProjectsCache = (await api('/api/jira/projects')) || []; }
-      catch (e) { jiraProjectsCache = []; }
-      dashProjectPick = searchableSelect({
-        placeholder: 'Выберите проект',
-        options: jiraProjectsCache.map((p) => ({ value: p.key, label: `${p.key} — ${p.name}` })),
-        onChange: (val) => { dashProject = val; loadDashboard(); },
-      });
-      $('#dash-project-select').innerHTML = '';
-      $('#dash-project-select').appendChild(dashProjectPick.root);
-    }
-    if (!jiraProjectsCache.length) {
-      dashWarn('Jira недоступна: проекты не загружены.');
-      return;
-    }
-    dashWarn('');
-    if (dashProject) loadDashboard();
-  }
-
-  async function loadDashboard() {
-    if (!dashProject) return;
-    const k = dashProject;
-    dashStatus('Загрузка по проекту ' + k + '…');
-    const empty = $('#dash-empty');
-    empty.classList.add('hidden');
-    try {
-      const d = await loadSignalData(k);
-      if (dashProject !== k) return; // ignored stale response
-      const hasData = (d.byAssignee && d.byAssignee.length)
-        || (d.byType && d.byType.length)
-        || (d.byEnvironment && d.byEnvironment.length)
-        || (d.bugSprints && d.bugSprints.length)
-        || (d.kpi && d.kpi.closedTotal);
-      const warn = [];
-      if (!d.envFieldResolved) warn.push('Поле «Окружение» не найдено в Jira — разрез по окружению пустой.');
-      if (!d.requestTypeFieldResolved) warn.push('Поле «Тип заявки» не найдено — Service Task как ошибки не учитываются.');
-      dashWarn(warn.join(' '));
-      if (!hasData) {
-        $('#dash-kpi').classList.add('hidden');
-        disposeAllCharts();
-        empty.classList.remove('hidden');
-        dashStatus('');
-        return;
-      }
-      renderDashKpi(d);
-      renderDashCharts(d);
-      dashStatus('Проект ' + k + ' — данные обновлены.');
-    } catch (e) {
-      disposeAllCharts();
-      dashStatus('Не удалось загрузить: ' + e.message, true);
-      empty.classList.remove('hidden');
-    }
-  }
-
-  function resetDashboards() {
-    dashProject = null;
-    disposeAllCharts();
-    if (dashProjectPick) { dashProjectPick.setValue(null); }
-    $('#dash-project-select').innerHTML = '';
-    dashProjectPick = null;
-    $('#dash-kpi').classList.add('hidden');
-    $('#dash-kpi').innerHTML = '';
-    dashWarn('');
-    dashStatus('');
-    $('#dash-empty').classList.add('hidden');
-    Object.keys(dashCharts).forEach((id) => { const c = dashCharts[id]; if (c && !c.isDisposed()) c.dispose(); });
-    dashCharts = {};
-  }
-
   /* ---------------- filters binding ---------------- */
 
   function resetJira() {
@@ -2350,8 +2112,6 @@
     $('#jira-tbl-project').addEventListener('change', (e) => { jiraTblProject = e.target.value; if (jiraIssues.length) renderJira(); });
     $('#jira-tbl-status').addEventListener('change', (e) => { jiraTblStatus = e.target.value; if (jiraIssues.length) renderJira(); });
     $('#jira-tbl-priority').addEventListener('change', (e) => { jiraTblPriority = e.target.value; if (jiraIssues.length) renderJira(); });
-    $('#dash-refresh').addEventListener('click', loadDashboard);
-    $('#dash-reset').addEventListener('click', resetDashboards);
   }
 
   function openTesterForm() {
