@@ -16,6 +16,7 @@
       <button class="tab" data-tab="registry">Реестр навыков</button>
       <button class="tab" data-tab="projects">Реестр проектов</button>
       <button class="tab" data-tab="jira">Jira</button>
+      <button class="tab" data-tab="dashboards">Дашборды</button>
     </nav>
   </header>
 
@@ -281,12 +282,70 @@
       </div>
       <div id="jira-empty" class="empty hidden">Задач не найдено. Измените выбор проекта или исполнителя.</div>
     </section>
+
+    <!-- ======= Dashboards tab ======= -->
+    <section id="dashboards" class="tab-panel hidden">
+      <div class="toolbar">
+        <div class="filters">
+          <div class="dd-field">
+            <span class="dd-label">Проект</span>
+            <div id="dash-project-select"></div>
+          </div>
+          <button id="dash-refresh" class="ghost">Обновить</button>
+          <button id="dash-reset" class="ghost">Сброс</button>
+        </div>
+      </div>
+
+      <div id="dash-warning" class="jira-warning hidden"></div>
+      <div id="dash-status" class="jira-status hidden"></div>
+
+      <div id="dash-kpi" class="jira-metrics hidden"></div>
+
+      <div class="dash-grid">
+        <div class="dash-card">
+          <div class="dash-card-title">Сводка по статусам</div>
+          <div id="dash-by-status" class="dash-chart"></div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-title">Задача vs Ошибка</div>
+          <div id="dash-by-type" class="dash-chart"></div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-title">Загрузка по исполнителям</div>
+          <div id="dash-by-assignee" class="dash-chart"></div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-title">По окружению</div>
+          <div id="dash-by-env" class="dash-chart"></div>
+        </div>
+
+        <div class="dash-card dash-wide">
+          <div class="dash-card-title">Velocity по последним закрытым спринтам</div>
+          <div id="dash-velocity" class="dash-chart"></div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-title">Burndown активного спринта</div>
+          <div id="dash-burndown" class="dash-chart"></div>
+        </div>
+
+        <div class="dash-card dash-wide">
+          <div class="dash-card-title">Затрачено vs Оценка по исполнителям</div>
+          <div id="dash-time-assignee" class="dash-chart"></div>
+        </div>
+        <div class="dash-card dash-wide">
+          <div class="dash-card-title">Затраченное время по статусам</div>
+          <div id="dash-time-status" class="dash-chart"></div>
+        </div>
+      </div>
+      <div id="dash-empty" class="empty hidden">Нет данных по проекту или Jira недоступна.</div>
+    </section>
   </main>
 
   <!-- ======= Modal root ======= -->
   <div id="modal-root"></div>
 
   <script src="vendor/frappe-gantt.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

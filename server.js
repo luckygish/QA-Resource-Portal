@@ -806,6 +806,14 @@ app.get('/api/jira/issue/:key', async (req, res) => {
   }
 });
 
+app.get('/api/jira/dashboard', async (req, res) => {
+  try {
+    res.json(await jira.dashboard(String(req.query.projectKey || ''), { cap: Number(req.query.cap) || undefined }));
+  } catch (e) {
+    err(res, e.status || 502, e.message);
+  }
+});
+
 /* ---------------- static + fallback ---------------- */
 
 app.use(express.static(path.join(__dirname, 'public')));

@@ -66,6 +66,25 @@ const SEARCH_FIELD_LIST = [
 ];
 
 let SPRINT_FIELD_ID = null;
+let ENV_FIELD_ID = null;
+
+async function resolveEnvironmentField(cfg) {
+  if (ENV_FIELD_ID) return ENV_FIELD_ID;
+  try {
+    const all = (await jiraCall('/field', cfg)) || [];
+    const fields = Array.isArray(all) ? all : [];
+    const custom = fields.filter((f) => String(f.id).startsWith('customfield_'));
+    const exact = custom.find((f) => {
+      const n = String(f.name || '').trim().toLowerCase();
+      return n === 'environment' || n === 'окружение';
+    });
+    const fuzzy = custom.find((f) => /environment|окружени/i.test(String(f.name || '')));
+    ENV_FIELD_ID = (exact || fuzzy || null) && (exact || fuzzy).id;
+  } catch (e) {
+    ENV_FIELD_ID = null;
+  }
+  return ENV_FIELD_ID;
+}
 
 async function resolveSprintField(cfg) {
   if (SPRINT_FIELD_ID) return SPRINT_FIELD_ID;
@@ -128,6 +147,231 @@ function mapUser(u) {
     accountId: u.accountId || null,
     active: u.active !== false,
     jqlName: name || u.accountId || u.key,
+  };
+}
+
+const DASHBOARD_BASE_FIELDS = SEARCH_FIELD_LIST.concat([
+  'statusCategory', 'resolution', 'resolutiondate', 'labels', 'components',
+]);
+
+const NO_ENV = 'Без окружения';
+
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Paginated search that returns all issues of a matching jql (capped).
+async function searchAll(cfg, jql, { pageSize = 200, cap = 1000 } = {}) {
+  const sprintId = await resolveSprintField(cfg);
+  const envId = await resolveEnvironmentField(cfg);
+  const fields = DASHBOARD_BASE_FIELDS.slice();
+  if (sprintId) fields.push(sprintId);
+  if (envId) fields.push(envId);
+
+  const out = [];
+  let startAt = 0;
+  for (let guard = 0; guard < 20; guard++) {
+    const body = { jql, maxResults: pageSize, fields };
+    if (startAt > 0) body.startAt = startAt;
+    let res;
+    try {
+      res = await jiraCall('/search', cfg, { method: 'POST', body });
+    } catch (e) {
+      break;
+    }
+    const arr = (res && res.issues) || [];
+    arr.forEach((it) => {
+      const names = sprintNamesOfIssue(it);
+      if (names.length) it._sprintNames = names;
+      out.push(it);
+    });
+    if (arr.length < pageSize || out.length >= cap) break;
+    startAt += arr.length;
+  }
+  return out;
+}
+
+function issueStatusCategory(it) {
+  const f = it && it.fields;
+  return f && f.status && f.status.statusCategory ? f.status.statusCategory.key : null;
+}
+
+function issueStatusName(it) {
+  const f = it && it.fields;
+  return (f && f.status && f.status.name) || '—';
+}
+
+function isDone(it) {
+  return issueStatusCategory(it) === 'done';
+}
+
+function isOpenIt(it) {
+  const f = it && it.fields;
+  return !(f && f.resolution);
+}
+
+function issueTypeName(it) {
+  const n = (it && it.fields && it.fields.issuetype && it.fields.issuetype.name) || 'Проч.';
+  const l = String(n).trim().toLowerCase();
+  if (l === 'задача') return 'Задача';
+  if (l === 'ошибка' || l === 'bug') return 'Ошибка';
+  return 'Прочее';
+}
+
+function issueAssignee(it) {
+  const a = it && it.fields && it.fields.assignee;
+  return (a && a.displayName) || 'Не назначен';
+}
+
+function issuePriority(it) {
+  const p = it && it.fields && it.fields.priority;
+  return (p && p.name) || 'Не задан';
+}
+
+function issueEnv(it, envId) {
+  if (!envId) return NO_ENV;
+  const v = it && it.fields && it.fields[envId];
+  if (v === undefined || v === null || v === '') return NO_ENV;
+  if (typeof v === 'object') return v.value || v.name || JSON.stringify(v);
+  return String(v);
+}
+
+function counts(map, key) {
+  if (!key && key !== 0) return;
+  map[key] = (map[key] || 0) + 1;
+}
+
+function sprintNameOfIssue(it) {
+  return (it && it._sprintNames && it._sprintNames[0]) || null;
+}
+
+function sumTime(it, field) {
+  return toNum(it && it.fields && it.fields[field]);
+}
+
+async function dashboard(projectKey, opts = {}) {
+  const cfg = loadConfig();
+  if (!cfg.configured) throw notConfigured();
+  const key = String(projectKey || '').trim().toUpperCase();
+  if (!key) throw new Error('Укажите projectKey');
+
+  const envId = await resolveEnvironmentField(cfg);
+  const cap = Number(opts.cap) || 1000;
+
+  const [active, unresolved, closed] = await Promise.all([
+    searchAll(cfg, `project = "${key}" AND sprint in openSprints()`, { cap: 500 }),
+    searchAll(cfg, `project = "${key}" AND resolution is EMPTY`, { cap: 500 }),
+    searchAll(cfg, `project = "${key}" AND sprint in closedSprints()`, { cap }),
+  ]);
+
+  // ---- Block A: summary / byStatus / byType / byAssignee / byPriority / byEnvironment
+  const kpi = { open: 0, activeBugs: 0, inTesting: 0, aggSpentActive: 0 };
+  const byStatus = {};
+  const byType = {};
+  const byAssignee = {};
+  const byPriority = {};
+  const byEnvironment = {};
+
+  let aggSpentActive = 0;
+  active.forEach((it) => {
+    aggSpentActive += sumTime(it, 'aggregatetimespent');
+    counts(byEnvironment, issueEnv(it, envId));
+  });
+
+  // в активном спринте: открытые ошибки
+  active.forEach((it) => {
+    if (issueTypeName(it) === 'Ошибка' && !isDone(it)) kpi.activeBugs += 1;
+  });
+
+  // unresolved: открыто задач, тестирование, по статусам/типам/исполнителю/приоритету
+  unresolved.forEach((it) => {
+    if (isOpenIt(it)) kpi.open += 1;
+    const st = issueStatusName(it);
+    if (String(st).trim().toLowerCase() === 'тестирование') kpi.inTesting += 1;
+    counts(byStatus, st);
+    counts(byType, issueTypeName(it));
+    counts(byAssignee, issueAssignee(it));
+    counts(byPriority, issuePriority(it));
+  });
+  kpi.aggSpentActive = aggSpentActive;
+
+  // ---- Block B: velocity over closed sprints + burndown of active sprint
+  const sprintDelivered = {};
+  const sprintStarted = {};
+  const sprintOrder = [];
+  closed.forEach((it) => {
+    const sn = sprintNameOfIssue(it);
+    if (!sn) return;
+    if (!(sn in sprintDelivered)) { sprintDelivered[sn] = 0; sprintStarted[sn] = 0; sprintOrder.push(sn); }
+    if (isDone(it)) sprintDelivered[sn] += 1;
+    else sprintStarted[sn] += 1;
+  });
+  const velocity = sprintOrder
+    .map((name) => ({ sprint: name, delivered: sprintDelivered[name], started: sprintStarted[name] }))
+    .slice(-10);
+
+  // burndown of active sprint
+  let remaining = 0;
+  let burndownDone = 0;
+  let burndownTotal = 0;
+  let doneCount = 0;
+  let remainCount = 0;
+  active.forEach((it) => {
+    if (isDone(it)) {
+      const sp = sumTime(it, 'aggregatetimespent') || sumTime(it, 'timespent');
+      burndownDone += sp;
+      doneCount += 1;
+      burndownTotal += sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
+    } else {
+      const rem = sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
+      remaining += rem;
+      remainCount += 1;
+      burndownTotal += rem;
+    }
+  });
+  const burndown = { remaining, done: burndownDone, total: burndownTotal, counts: { done: doneCount, remaining: remainCount } };
+
+  // ---- Block D: spent vs estimate by assignee and by status
+  const timeByAssignee = {};
+  const timeByStatus = {};
+  let timeTotalSpent = 0;
+  let timeTotalEstimate = 0;
+  active.forEach((it) => {
+    const spent = sumTime(it, 'aggregatetimespent') || sumTime(it, 'timespent');
+    const est = sumTime(it, 'aggregatetimeestimate') || sumTime(it, 'timeestimate');
+    timeTotalSpent += spent;
+    timeTotalEstimate += est;
+    const a = issueAssignee(it);
+    if (!timeByAssignee[a]) timeByAssignee[a] = { spent: 0, estimate: 0 };
+    timeByAssignee[a].spent += spent;
+    timeByAssignee[a].estimate += est;
+    const s = issueStatusName(it);
+    if (!timeByStatus[s]) timeByStatus[s] = { spent: 0, estimate: 0 };
+    timeByStatus[s].spent += spent;
+    timeByStatus[s].estimate += est;
+  });
+
+  const sortDesc = (obj, key) => Object.entries(obj)
+    .map(([name, v]) => (key ? { name, value: v[key] } : { name, value: v }))
+    .sort((a, b) => b.value - a.value);
+
+  return {
+    projectKey: key,
+    envFieldResolved: !!envId,
+    kpi,
+    byStatus: Object.entries(byStatus).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    byType: Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    byAssignee: Object.entries(byAssignee).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    byPriority: Object.entries(byPriority).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    byEnvironment: Object.entries(byEnvironment).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    velocity,
+    burndown,
+    time: {
+      byAssignee: Object.entries(timeByAssignee).map(([name, v]) => ({ name, spent: v.spent, estimate: v.estimate })),
+      byStatus: Object.entries(timeByStatus).map(([name, v]) => ({ name, spent: v.spent, estimate: v.estimate })),
+      total: { spent: timeTotalSpent, estimate: timeTotalEstimate },
+    },
   };
 }
 
@@ -289,4 +533,6 @@ module.exports = {
     const fields = SEARCH_FIELD_LIST.concat(['description', 'comment', 'components', 'labels', 'fixVersions', 'resolution']).join(',');
     return jiraCall('/issue/' + encodeURIComponent(key) + '?fields=' + fields, cfg);
   },
+
+  dashboard,
 };
