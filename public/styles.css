@@ -188,8 +188,8 @@ button.small { padding: 3px 8px; font-size: 12px; }
 }
 
 .skill-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.skill-row .name { flex: 1; }
-.skill-row select { padding: 4px 6px; }
+.skill-row > span { flex: 1; min-width: 0; }
+.skill-row select { padding: 4px 6px; min-width: 56px; }
 
 .assignment-row { display: grid; grid-template-columns: 1fr 150px 100px 100px 60px auto; gap: 8px; align-items: center; margin-bottom: 6px; }
 .assignment-row .proj-cell { font-weight: 400; color: var(--text); }
@@ -277,6 +277,22 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .jira-comment-body { white-space: pre-wrap; color: var(--text); }
 
 .field-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.check-line { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.check-line input[type="checkbox"] { width: 16px; height: 16px; }
+
+.outstaff-flag {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 8px;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 14px solid #f5c518;
+  cursor: help;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
 
 /* Jira: checkbox dropdowns (projects / assignees) + warning banner */
 .filters-jira { align-items: flex-end; }

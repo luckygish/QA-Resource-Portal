@@ -20,6 +20,13 @@
     return n;
   };
 
+  function outstaffFlag() {
+    const s = el('span', 'outstaff-flag');
+    s.title = 'Сотрудник вне штата';
+    s.setAttribute('aria-label', 'Сотрудник вне штата');
+    return s;
+  }
+
   /* ---------------- utils ---------------- */
 
   const fmt = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -260,7 +267,10 @@
         : '—';
 
       const nameTd = el('td');
-      nameTd.appendChild(el('b', null, u.name));
+      const bold = el('b');
+      bold.textContent = u.name;
+      nameTd.appendChild(bold);
+      if (u.isOutstaff) nameTd.appendChild(outstaffFlag());
       if (u.email) nameTd.appendChild(el('div', null, u.email));
 
       const statusTd = el('td');
@@ -316,7 +326,8 @@
 
   function renderUserHeader(u) {
     const h = el('h2');
-    h.textContent = `${u.name} · ${u.grade}`;
+    h.appendChild(document.createTextNode(`${u.name} · ${u.grade}`));
+    if (u.isOutstaff) h.appendChild(outstaffFlag());
     return h;
   }
 
@@ -404,6 +415,22 @@
     });
     aboutField.appendChild(aboutInput);
     box.appendChild(aboutField);
+
+    const outstaffField = el('div', 'field');
+    const outstaffLabel = el('label', 'check-line');
+    const outstaffCheck = el('input');
+    outstaffCheck.type = 'checkbox';
+    outstaffCheck.checked = !!u.isOutstaff;
+    outstaffLabel.appendChild(outstaffCheck);
+    outstaffLabel.appendChild(document.createTextNode('Outstaff (вне штата)'));
+    outstaffCheck.addEventListener('change', async () => {
+      try {
+        await api(`/api/users/${u.id}`, { method: 'PUT', body: { isOutstaff: outstaffCheck.checked } });
+        await refresh();
+      } catch (e) { toast(e.message, 'error'); outstaffCheck.checked = !!u.isOutstaff; }
+    });
+    outstaffField.appendChild(outstaffLabel);
+    box.appendChild(outstaffField);
 
     return box;
   }
@@ -2134,6 +2161,14 @@
     const gradeSel = el('select');
     GRADES.forEach((g) => gradeSel.appendChild(new Option(g, g)));
 
+    const outstaffField = el('div', 'field');
+    const outstaffLabel = el('label', 'check-line');
+    const outstaffCheck = el('input');
+    outstaffCheck.type = 'checkbox';
+    outstaffLabel.appendChild(outstaffCheck);
+    outstaffLabel.appendChild(document.createTextNode('Outstaff'));
+    outstaffField.appendChild(outstaffLabel);
+
     const fioWrap = el('div', 'searchable-select tester-search');
     const nameInput = el('input'); nameInput.placeholder = 'ФИО (поиск в Jira)'; nameInput.autocomplete = 'off';
     const panel = el('div', 'dd-panel hidden jira-user-panel');
@@ -2177,6 +2212,7 @@
     body.appendChild(fieldWrap('ФИО', fioWrap));
     body.appendChild(fieldWrap('Email', emailInput));
     body.appendChild(fieldWrap('Грейд', gradeSel));
+    body.appendChild(outstaffField);
     body.appendChild(msg);
     modal.appendChild(body);
 
@@ -2196,7 +2232,7 @@
         return;
       }
       try {
-        const u = await api('/api/users', { method: 'POST', body: { name, grade: gradeSel.value, email } });
+        const u = await api('/api/users', { method: 'POST', body: { name, grade: gradeSel.value, email, isOutstaff: outstaffCheck.checked } });
         closeModal();
         await loadData();
         openUserCard(u.id);

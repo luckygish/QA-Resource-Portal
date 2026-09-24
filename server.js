@@ -56,6 +56,7 @@ function normalizeData(data) {
     const kept = (user.skills || []).filter((sk) => sk && !sk._drop);
     (user.skills || []).forEach((sk) => { if (sk) delete sk._drop; });
     if (kept.length !== user.skills.length) { user.skills = kept; changed = true; }
+    if (!('isOutstaff' in user)) { user.isOutstaff = false; changed = true; }
   });
 
   // ensure managers array exists
@@ -204,7 +205,7 @@ app.post('/api/users', (req, res) => {
   if (!name || !GRADES.includes(grade)) return err(res, 400, 'Нужны name и валидный grade');
   withLock(() => {
     const data = readData();
-    const user = { id: nextId(data.users), name, grade, email: email || '', skills: [], assignments: [] };
+    const user = { id: nextId(data.users), name, grade, email: email || '', isOutstaff: !!(req.body || {}).isOutstaff, skills: [], assignments: [] };
     data.users.push(user);
     writeData(data);
     res.json(user);
@@ -233,6 +234,7 @@ app.put('/api/users/:id', (req, res) => {
       if (about.length > 255) return err(res, 400, '«О себе» должно быть не длиннее 255 символов');
       user.about = about;
     }
+    if (req.body && 'isOutstaff' in req.body) user.isOutstaff = !!req.body.isOutstaff;
     writeData(data);
     res.json(user);
   });
