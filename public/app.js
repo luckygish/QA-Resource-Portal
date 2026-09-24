@@ -262,8 +262,10 @@
       }
 
       const status = getUserStatus(u);
-      const skillsText = u.skills.length
-        ? u.skills.map((s) => `${skillName(s.skillId)} · у${s.level}`).join(', ')
+      const skillParts = u.skills.map((s) => `${skillName(s.skillId)} · у${s.level}`);
+      const MAX_SKILLS = 3;
+      const skillsText = skillParts.length
+        ? skillParts.slice(0, MAX_SKILLS).join(', ') + (skillParts.length > MAX_SKILLS ? ' …' : '')
         : '—';
 
       const nameTd = el('td');

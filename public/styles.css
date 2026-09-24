@@ -145,7 +145,8 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .card .comment { color: var(--muted); font-style: italic; margin-top: 6px; }
 .card .row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
 
-.empty { color: var(--muted); text-align: center; padding: 24px; }
+.empty { color: var(--muted); text-align: center; width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; min-height: 200px; padding: 24px; }
+.card-list .empty, #request-list .empty { grid-column: 1 / -1; }
 
 /* modal */
 .modal-mask {
