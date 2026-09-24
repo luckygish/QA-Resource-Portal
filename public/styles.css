@@ -289,10 +289,18 @@ button.small { padding: 3px 8px; font-size: 12px; }
   margin-left: 8px;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
-  border-bottom: 14px solid #f5c518;
+  border-bottom: 14px solid #4aa9e8;
   cursor: help;
   vertical-align: middle;
   flex: 0 0 auto;
+  position: relative;
+}
+.outstaff-flag:hover::after {
+  content: attr(data-tip); white-space: pre-line;
+  position: absolute; left: 50%; bottom: 150%; transform: translateX(-50%);
+  background: #fff; color: #222; border: 1px solid #d0d7de;
+  padding: 10px 12px; border-radius: 6px;
+  font-size: 12px; line-height: 1.5; width: 220px; z-index: 30; box-shadow: 0 4px 12px rgba(0,0,0,.15);
 }
 
 /* Jira: checkbox dropdowns (projects / assignees) + warning banner */
@@ -320,5 +328,97 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .check-item.selected { background: #e0ecff; }
 .check-item span { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .check-mark { flex: 0 0 auto !important; margin-left: 6px; color: var(--primary); font-weight: 700; }
+.fav-star { flex: 0 0 auto !important; margin-left: 6px; cursor: pointer; font-size: 14px; color: #c9ced6; line-height: 1; transition: color .1s ease; }
+.fav-star:hover { color: #f5c518; }
+.fav-star.active { color: #f5c518; }
+.dd-grp-label { font-size: 11px; font-weight: 700; color: var(--muted); padding: 8px 8px 2px; text-transform: uppercase; letter-spacing: .3px; }
 .jira-top { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 .jira-warning { background: #fdecea; border: 1px solid #f5c2c0; color: #b3261e; padding: 8px 14px; border-radius: 6px; font-size: 13px; width: fit-content; line-height: 1.6; }
+
+/* ======= Assessment tab ======= */
+.assess-panel { padding: 16px; margin-bottom: 16px; }
+.hint { font-size: 13px; color: var(--muted); margin: 4px 0; }
+.hint code { background: #eef1f5; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+#as-preview { margin-top: 12px; padding: 12px; border: 1px dashed var(--border); border-radius: 8px; background: #fafbfc; }
+.pv-line { font-size: 13px; margin: 2px 0; }
+#as-preview-actions { margin-top: 10px; }
+#as-file { font-size: 13px; margin-top: 8px; }
+.skill-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #fff; }
+.skill-card.mismatch { border-color: #d4a72c; background: #fffdf0; box-shadow: inset 3px 0 0 #f5c518; }
+.skill-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+.skill-grid { display: flex; gap: 16px; margin-bottom: 8px; }
+.skill-grid .cell { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); width: 130px; }
+.skill-grid select { width: 100%; box-sizing: border-box; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: #fff; }
+.skill-grid select[disabled] { color: var(--text); background: #f0f2f5; }
+.skill-cmt { display: flex; gap: 12px; margin-bottom: 8px; }
+.skill-cmt .field { margin-bottom: 0; flex: 1; }
+.skill-cmt label { color: var(--muted); font-size: 12px; }
+.skill-desc { border-top: 1px dashed var(--border); padding-top: 8px; }
+.small-title { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+.skill-desc .level-desc { margin: 2px 0 8px; font-size: 13px; }
+
+/* ======= Assessment card sub-tabs / history ======= */
+.card-sub-tabs { display: flex; gap: 4px; padding: 8px 20px 0; border-bottom: 1px solid var(--border); }
+.card-sub-tab {
+  padding: 7px 14px; border: 1px solid transparent; border-bottom: none; background: transparent;
+  font-size: 13px; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0;
+}
+.card-sub-tab:hover { color: var(--text); }
+.card-sub-tab.active { background: #fff; border-color: var(--border); color: var(--primary); font-weight: 600; }
+.card-body { padding-top: 14px; }
+
+.cmp-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+.cmp-label { color: var(--muted); }
+.cmp-and { color: var(--muted); }
+.cmp-controls input[type="date"] { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+td.changed { background: #fff3cd; }
+.hist-card { margin-bottom: 12px; }
+.hist-card .grid { margin-top: 6px; }
+
+.chart-legend { display: flex; gap: 16px; margin: 6px 0 8px; font-size: 13px; }
+.lg-self { color: #0052cc; }
+.lg-lead { color: #e08e00; }
+.progress-chart { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; }
+.progress-svg { width: 100%; height: auto; display: block; }
+.chart-grid { stroke: #e8ebf0; stroke-width: 1; }
+.chart-axis-lbl { font-size: 11px; fill: var(--muted); }
+.chart-axis-x { font-size: 11px; fill: var(--muted); }
+.chart-line { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-dot { stroke: #fff; stroke-width: 1.5; }
+.chart-val { font-size: 11px; font-weight: 600; }
+
+/* ======= Jira occupancy widget ======= */
+.occupancy-card { margin-top: 12px; }
+.occupancy-card .jira-assignee-name { margin-bottom: 8px; }
+.occupancy-name-row { display: flex; align-items: center; gap: 8px; }
+.occupancy-name-row .jira-assignee-name { margin-bottom: 0; }
+.occupancy-info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  font-size: 11px; font-weight: 700; color: #fff; background: #4aa9e8;
+  cursor: help; user-select: none; position: relative; line-height: 1;
+}
+.occupancy-info:hover::after {
+  content: attr(data-tip); white-space: pre-line;
+  position: absolute; left: 50%; bottom: 130%; transform: translateX(-50%);
+  background: #fff; color: #222; border: 1px solid #d0d7de;
+  padding: 10px 12px; border-radius: 6px;
+  font-size: 12px; line-height: 1.5; width: 260px; z-index: 30; box-shadow: 0 4px 12px rgba(0,0,0,.15);
+}
+.occupancy-row { margin-bottom: 12px; padding: 8px 10px; background: #fafbfc; border: 1px solid #eef0f4; border-radius: 8px; }
+.occupancy-top { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 6px; gap: 8px; flex-wrap: wrap; }
+.occupancy-project { font-weight: 600; }
+.occupancy-cap { display: flex; align-items: center; gap: 6px; }
+.occupancy-cap-label { font-size: 11px; color: var(--muted); }
+.occupancy-cap-input { width: 64px; padding: 2px 6px; font-size: 12px; border: 1px solid #d7dbe2; border-radius: 4px; }
+.occupancy-load { margin-bottom: 6px; }
+.occupancy-load:last-child { margin-bottom: 0; }
+.occupancy-load-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 3px; gap: 8px; }
+.occupancy-load-label { color: var(--text); }
+.occupancy-pct { font-weight: 700; color: var(--text); white-space: nowrap; }
+.occupancy-pct.over { color: var(--danger); }
+.occupancy-bar { height: 10px; background: #eef0f4; border-radius: 6px; overflow: hidden; }
+.occupancy-fill { height: 100%; background: var(--primary); border-radius: 6px; transition: width .2s ease; }
+.occupancy-fill.over { background: var(--danger); }
+.occupancy-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.occupancy-empty { font-size: 12px; color: var(--muted); margin: 4px 0; }

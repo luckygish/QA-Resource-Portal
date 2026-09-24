@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MySkills — моя матрица навыков</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>Моя матрица навыков</h1>
+
+    <!-- welcome -->
+    <section id="screen-welcome" class="screen">
+      <div class="card">
+        <p class="intro">Это не экзамен и не отчёт для начальства. Это твоя карта роста. Оцени себя честно — это поможет тебе увидеть, где ты уже силён, а где есть пространство для развития. Если сомневаешься между двумя уровнями — ставь ниже и напиши в комментарии, что хочешь прокачать. QA-лид просмотрит твою самооценку и обсудит её с тобой на ближайшей встрече 1:1.</p>
+        <h3>Как заполнять</h3>
+        <ul class="howto">
+          <li>Для каждого навыка выбери уровень от 1 до 4.</li>
+          <li>Ориентируйся на описание уровней из реестра навыков.</li>
+          <li>В поле «Комментарий» (необязательно) укажи, что хочешь прокачать, или приведи пример.</li>
+          <li>Если навык незнаком или ты его не использовал — ставь 1 и напиши об этом.</li>
+        </ul>
+      </div>
+      <div class="field">
+        <label>ФИО *</label>
+        <input type="text" id="name" placeholder="Иванов Иван" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label>Грейд</label>
+        <select id="grade">
+          <option>Junior</option>
+          <option>Middle</option>
+          <option>Senior</option>
+          <option>Lead</option>
+        </select>
+      </div>
+      <div id="welcome-msg" class="msg"></div>
+      <button id="start" class="primary wide">Начать оценку</button>
+    </section>
+
+    <!-- form -->
+    <section id="screen-form" class="screen hidden">
+      <div class="form-meta"><b id="whoami"></b></div>
+      <div id="blocks"></div>
+      <div id="form-msg" class="msg"></div>
+      <div class="bar">
+        <button id="back" class="ghost">Назад</button>
+        <button id="save" class="primary">Сохранить</button>
+      </div>
+    </section>
+
+    <!-- result -->
+    <section id="screen-result" class="screen hidden">
+      <h3>Твой профиль навыков</h3>
+      <p class="hint">Нажми на навык, чтобы увидеть описание текущего и следующего уровня.</p>
+      <div id="profile"></div>
+      <div id="result-msg" class="msg"></div>
+      <div class="bar">
+        <button id="again" class="ghost">Заполнить заново</button>
+        <button id="download" class="primary">Скачать JSON</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="skills.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

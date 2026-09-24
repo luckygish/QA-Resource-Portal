@@ -13,6 +13,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="resources">Ресурсы</button>
       <button class="tab" data-tab="requests">Потребности</button>
+      <button class="tab" data-tab="assessment">Оценка сотрудников</button>
       <button class="tab" data-tab="registry">Реестр навыков</button>
       <button class="tab" data-tab="projects">Реестр проектов</button>
       <button class="tab" data-tab="jira">Jira</button>
@@ -102,6 +103,77 @@
       </div>
 
       <div id="request-list" class="card-list"></div>
+    </section>
+
+    <!-- ======= Assessment tab ======= -->
+    <section id="assessment" class="tab-panel hidden">
+      <div class="toolbar">
+        <div class="actions">
+          <button id="as-export-all" class="ghost">Экспортировать всё (JSON)</button>
+          <button id="as-export-csv" class="ghost">Экспортировать CSV</button>
+        </div>
+      </div>
+
+      <div class="assess-panel card">
+        <div class="section-title">Импорт оценки навыков</div>
+        <p class="hint">Загрузите JSON-файл самооценки, выгруженный сотрудником из опросника MySkills.</p>
+        <input type="file" id="as-file" accept="application/json,.json" />
+        <div class="hint">Выгружаемый из MySkills файл называется <code>self-assessment_&lt;Имя&gt;_&lt;дата&gt;.json</code></div>
+        <div id="as-preview" class="hidden"></div>
+        <div class="actions" id="as-preview-actions">
+          <button id="as-import" class="primary hidden">Импортировать</button>
+          <button id="as-cancel" class="ghost hidden">Отмена</button>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="filters">
+          <label>Грейд
+            <select id="as-grade">
+              <option value="">Все</option>
+              <option>Junior</option>
+              <option>Middle</option>
+              <option>Senior</option>
+              <option>Lead</option>
+            </select>
+          </label>
+          <label>Оценка за
+            <select id="as-period">
+              <option value="all">Весь период</option>
+              <option value="month">последний месяц</option>
+              <option value="quarter">последний квартал</option>
+              <option value="year">последний год</option>
+            </select>
+          </label>
+          <label>Статус
+            <select id="as-status">
+              <option value="">Все</option>
+              <option value="has">с оценкой</option>
+              <option value="none">без оценки</option>
+            </select>
+          </label>
+          <label>Поиск
+            <input type="text" id="as-search" placeholder="ФИО" />
+          </label>
+          <button id="reset-as-filters" class="ghost">Сброс</button>
+        </div>
+      </div>
+
+      <table class="grid">
+        <thead>
+          <tr>
+            <th>ФИО</th>
+            <th>Грейд</th>
+            <th>Дата последней оценки</th>
+            <th>Навыки</th>
+            <th>Средний уровень</th>
+            <th>Статус</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody id="as-rows"></tbody>
+      </table>
+      <p id="as-empty" class="empty hidden">Никого не найдено.</p>
     </section>
 
     <!-- ======= Registry tab ======= -->

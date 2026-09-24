@@ -62,6 +62,12 @@ function normalizeData(data) {
   // ensure managers array exists
   if (!Array.isArray(data.managers)) { data.managers = []; changed = true; }
 
+  // ensure assessments array exists
+  if (!Array.isArray(data.assessments)) { data.assessments = []; changed = true; }
+
+  // ensure occupancy capacities array exists (per assignee+project, manual)
+  if (!Array.isArray(data.capacities)) { data.capacities = []; changed = true; }
+
   // extend projects with registry fields (defaults) if missing
   (data.projects || []).forEach((p) => {
     if (!('abbreviation' in p)) { p.abbreviation = ''; changed = true; }
@@ -105,7 +111,7 @@ function initData() {
   } else {
     // first run with no data file: create an empty baseline so the server
     // starts cleanly and the seed/migration populates the registry.
-    data = { users: [], projects: [], requests: [], managers: [], skillRegistry: [], categories: [] };
+    data = { users: [], projects: [], requests: [], managers: [], skillRegistry: [], categories: [], assessments: [], capacities: [] };
     writeData(data);
   }
   if (normalizeData(data)) writeData(data);
@@ -754,7 +760,122 @@ app.post('/api/categories', (req, res) => {
   });
 });
 
+/* ---------------- employee assessments ---------------- */
+
+app.get('/api/assessments', (req, res) => {
+  res.json({ assessments: readData().assessments || [] });
+});
+
+app.post('/api/assessments/import', (req, res) => {
+  const body = req.body || {};
+  const employee = body.employee || {};
+  const name = String(employee.name || '').trim();
+  const grade = String(employee.grade || '').trim();
+  const assessmentDate = String(employee.assessmentDate || '').trim();
+  const skills = Array.isArray(body.skills) ? body.skills : [];
+
+  if (!name) return err(res, 400, 'Укажите ФИО сотрудника');
+  if (!GRADES.includes(grade)) return err(res, 400, 'Некорректный грейд');
+  if (!assessmentDate) return err(res, 400, 'Укажите дату оценки');
+  if (skills.length === 0) return err(res, 400, 'Файл не содержит навыков');
+
+  withLock(() => {
+    const data = readData();
+    const unknown = [];
+    const mapped = [];
+    for (const s of skills) {
+      const sname = String((s && s.skill) || '').trim();
+      const r = sname
+        ? data.skillRegistry.find((x) => x.skill.trim().toLowerCase() === sname.toLowerCase())
+        : null;
+      if (!sname) { if (!unknown.includes('(без названия)')) unknown.push('(без названия)'); continue; }
+      if (!r) { unknown.push(sname); continue; }
+      const lvl = Number(s.level);
+      mapped.push({
+        skillId: r.id,
+        skill: r.skill,
+        selfLevel: Number.isFinite(lvl) && lvl >= 1 && lvl <= 4 ? Math.trunc(lvl) : 1,
+        selfComment: String((s && s.comment) == null ? '' : s.comment),
+        leadLevel: null,
+        leadComment: '',
+      });
+    }
+    if (unknown.length) return err(res, 400, 'Не удалось распознать навыки: ' + Array.from(new Set(unknown)).join(', '));
+
+    const key = (n) => String(n).trim().replace(/\s+/g, ' ').toLowerCase();
+    let user = data.users.find((u) => key(u.name) === key(name));
+    let userId = user ? user.id : null;
+    if (!user) {
+      user = { id: nextId(data.users), name, grade, email: '', isOutstaff: false, skills: [], assignments: [] };
+      data.users.push(user);
+      userId = user.id;
+    }
+
+    const assessment = { id: nextId(data.assessments), userId, name, grade, assessmentDate, skills: mapped };
+    data.assessments.push(assessment);
+    writeData(data);
+    res.status(201).json(assessment);
+  });
+});
+
+app.put('/api/assessments/:id/skills/:idx', (req, res) => {
+  const id = Number(req.params.id);
+  const idx = Number(req.params.idx);
+  withLock(() => {
+    const data = readData();
+    const a = (data.assessments || []).find((x) => x.id === id);
+    if (!a) return err(res, 404, 'Оценка не найдена');
+    if (!a.skills[idx]) return err(res, 404, 'Навык не найден');
+    const b = req.body || {};
+    if ('leadLevel' in b) {
+      const lv = b.leadLevel === null || b.leadLevel === '' ? null : Number(b.leadLevel);
+      if (lv !== null && !(Number.isInteger(lv) && lv >= 1 && lv <= 4)) return err(res, 400, 'Уровень лида должен быть целым от 1 до 4');
+      a.skills[idx].leadLevel = lv;
+    }
+    if ('leadComment' in b) a.skills[idx].leadComment = String(b.leadComment == null ? '' : b.leadComment);
+    writeData(data);
+    res.json(a.skills[idx]);
+  });
+});
+
+app.delete('/api/assessments/:id', (req, res) => {
+  const id = Number(req.params.id);
+  withLock(() => {
+    const data = readData();
+    const idx = (data.assessments || []).findIndex((x) => x.id === id);
+    if (idx === -1) return err(res, 404, 'Оценка не найдена');
+    data.assessments.splice(idx, 1);
+    writeData(data);
+    res.json({ ok: true });
+  });
+});
+
 /* ---------------- Jira integration (read-only proxy) ---------------- */
+
+// Occupancy capacities (manual, per assignee+project) stored in data.json
+app.get('/api/jira/capacities', (req, res) => {
+  res.json({ capacities: readData().capacities || [] });
+});
+
+app.put('/api/jira/capacities', (req, res) => {
+  const b = req.body || {};
+  const projectKey = String(b.projectKey || '').trim();
+  const assignee = String(b.assignee || '').trim();
+  if (!projectKey || !assignee) return err(res, 400, 'Нужны projectKey и assignee');
+  const capacity = Number(b.capacity);
+  if (!Number.isFinite(capacity) || capacity < 0) return err(res, 400, 'Ёмкость должна быть неотрицательным числом');
+  withLock(() => {
+    const data = readData();
+    const rec = (data.capacities || []).find((c) => c.assignee === assignee && c.projectKey === projectKey);
+    if (rec) {
+      rec.capacity = capacity;
+    } else {
+      data.capacities.push({ id: nextId(data.capacities), assignee, projectKey, capacity });
+    }
+    writeData(data);
+    res.json({ ok: true, capacities: data.capacities });
+  });
+});
 
 app.get('/api/jira/health', (req, res) => {
   res.json(jira.getConfig());

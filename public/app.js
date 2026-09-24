@@ -22,7 +22,7 @@
 
   function outstaffFlag() {
     const s = el('span', 'outstaff-flag');
-    s.title = 'Сотрудник вне штата';
+    s.setAttribute('data-tip', 'Сотрудник вне штата');
     s.setAttribute('aria-label', 'Сотрудник вне штата');
     return s;
   }
@@ -165,6 +165,7 @@
     renderUsers();
     renderRequests();
     renderRegistry();
+    renderAssessment();
     renderProjectOptions();
     renderProjects();
     renderManagers();
@@ -206,10 +207,11 @@
 
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    ['resources', 'requests', 'registry', 'projects', 'jira'].forEach((id) => {
+    ['resources', 'requests', 'assessment', 'registry', 'projects', 'jira'].forEach((id) => {
       $('#' + id).classList.toggle('hidden', id !== name);
     });
     if (name === 'registry') renderRegistry();
+    if (name === 'assessment') renderAssessment();
     if (name === 'projects') switchProjectsSub(projectsSub);
     if (name === 'jira') renderJiraTab();
   }
@@ -1500,6 +1502,685 @@
     openModal(modal);
   }
 
+  /* ---------------- assessment tab ---------------- */
+
+  let asPendingFile = null;
+
+  const escHtml = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const nameKey = (n) => String(n).trim().replace(/\s+/g, ' ').toLowerCase();
+  const stampTime = () => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  };
+  const asFileBase = (n) => String(n).trim().replace(/[^\w\u0400-\u04FF-]+/g, '_').replace(/_+/g, '_');
+  const asMismatch = (sk) => sk.leadLevel != null && Number(sk.leadLevel) !== Number(sk.selfLevel);
+
+  function asAssessments(u) {
+    return (state.data.assessments || []).filter((a) => {
+      if (u.id != null && a.userId != null) return a.userId === u.id;
+      return nameKey(a.name) === nameKey(u.name);
+    });
+  }
+
+  function asLatest(u) {
+    const list = asAssessments(u);
+    if (!list.length) return null;
+    return list.reduce((best, a) => {
+      if (a.assessmentDate > best.assessmentDate) return a;
+      if (a.assessmentDate === best.assessmentDate && a.id > best.id) return a;
+      return best;
+    });
+  }
+
+  function asAvg(a) {
+    if (!a || !a.skills.length) return '—';
+    const sum = a.skills.reduce((s, x) => s + Number(x.selfLevel), 0);
+    return (sum / a.skills.length).toFixed(1);
+  }
+
+  function asInRange(dateStr, period) {
+    if (period === 'all') return true;
+    const now = new Date();
+    const limit = new Date(now);
+    if (period === 'month') limit.setMonth(limit.getMonth() - 1);
+    else if (period === 'quarter') limit.setMonth(limit.getMonth() - 3);
+    else limit.setFullYear(limit.getFullYear() - 1);
+    const d = new Date(dateStr);
+    return d >= limit && d <= now;
+  }
+
+  /* ---------- assessment history helpers ---------- */
+
+  function asSortedSnapshots(u) {
+    return asAssessments(u).slice().sort((a, b) =>
+      a.assessmentDate < b.assessmentDate ? -1 : a.assessmentDate > b.assessmentDate ? 1 : a.id - b.id
+    );
+  }
+
+  function skillInSnapshot(snapshot, skillId) {
+    if (!snapshot) return null;
+    return (snapshot.skills || []).find((sk) => Number(sk.skillId) === Number(skillId)) || null;
+  }
+
+  const fmtShort = (iso) => {
+    const d = new Date(iso);
+    return `${d.getDate()}.${d.getMonth() + 1}`;
+  };
+  const fmtLevel = (v) => (v == null ? '—' : String(v));
+  const changeStr = (from, to) => {
+    if (from == null && to == null) return null;
+    if (from !== to) return `${fmtLevel(from)} → ${fmtLevel(to)}`;
+    return null;
+  };
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs) {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  function renderAssessment() {
+    const grade = $('#as-grade').value;
+    const period = $('#as-period').value;
+    const status = $('#as-status').value;
+    const q = String($('#as-search').value || '').trim().toLowerCase();
+
+    const rows = [];
+    state.data.users.forEach((u) => {
+      if (grade && u.grade !== grade) return;
+      if (q && !u.name.toLowerCase().includes(q)) return;
+      const latest = asLatest(u);
+      if (period !== 'all' && !(latest && asInRange(latest.assessmentDate, period))) return;
+      if (status === 'has' && !latest) return;
+      if (status === 'none' && latest) return;
+      rows.push({ u, latest });
+    });
+
+    const tbody = $('#as-rows');
+    tbody.innerHTML = '';
+    $('#as-empty').classList.toggle('hidden', rows.length > 0);
+
+    rows.forEach(({ u, latest }) => {
+      const tr = el('tr');
+
+      const nameTd = el('td');
+      nameTd.appendChild(el('b', null, u.name));
+      tr.appendChild(nameTd);
+      tr.appendChild(el('td', null, u.grade));
+      tr.appendChild(el('td', null, latest ? fmtDate(latest.assessmentDate) : '—'));
+      tr.appendChild(el('td', null, latest ? String(latest.skills.length) : '—'));
+      tr.appendChild(el('td', null, latest ? asAvg(latest) : '—'));
+
+      const stTd = el('td');
+      stTd.appendChild(el('span', 'badge ' + (latest ? 'free' : 'partial'), latest ? 'есть оценка' : 'нет оценки'));
+      tr.appendChild(stTd);
+
+      const act = el('td');
+      const view = el('button', 'small', 'Просмотр');
+      view.addEventListener('click', () => openAssessmentCard(u));
+      act.appendChild(view);
+      if (latest) {
+        const del = el('button', 'small danger', 'Удалить');
+        del.addEventListener('click', async () => {
+          if (!confirm(`Удалить запись оценки от ${fmtDate(latest.assessmentDate)}? Сотрудник останется в реестре.`)) return;
+          try {
+            await api(`/api/assessments/${latest.id}`, { method: 'DELETE' });
+            await loadData();
+          } catch (e) { toast(e.message, 'error'); }
+        });
+        act.appendChild(del);
+      }
+      tr.appendChild(act);
+      tbody.appendChild(tr);
+    });
+  }
+
+  function download(filename, content, mime) {
+    const blob = new Blob([content], { type: mime || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function openAssessmentCard(u) {
+    const latest = asLatest(u);
+    const snapshots = asSortedSnapshots(u);
+    if (!latest) return toast('У сотрудника нет оценки', 'error');
+
+    const modal = el('div', 'modal');
+    const header = el('div', 'modal-header');
+    header.appendChild(el('h2', null, u.name));
+    header.appendChild(el('div', 'meta', `Грейд: ${latest.grade} · Оценок: ${snapshots.length} · Последняя: ${fmtDate(latest.assessmentDate)}`));
+    modal.appendChild(header);
+
+    const tabs = el('div', 'card-sub-tabs');
+    const tabDefs = [
+      ['profile', 'Профиль'],
+      ['compare', 'Сравнение'],
+      ['history', 'История'],
+      ['progress', 'Прогресс'],
+    ];
+    const tabBtns = {};
+    let activeTab = 'profile';
+    tabDefs.forEach(([key, label]) => {
+      const b = el('button', 'card-sub-tab' + (key === 'profile' ? ' active' : ''), label);
+      b.addEventListener('click', () => switchCardTab(key));
+      tabs.appendChild(b);
+      tabBtns[key] = b;
+    });
+    modal.appendChild(tabs);
+
+    const body = el('div', 'modal-body card-body');
+    let leadItems = [];
+    let profileMsg = null;
+
+    function renderProfile() {
+      body.innerHTML = '';
+      leadItems = [];
+      const msg = el('div', 'form-msg');
+      profileMsg = msg;
+      latest.skills.forEach((sk, idx) => {
+        const reg = registryById(sk.skillId);
+        const cur = Number(sk.selfLevel);
+        const mism = asMismatch(sk);
+
+        const box = el('div', 'skill-card' + (mism ? ' mismatch' : ''));
+        const head = el('div', 'skill-head');
+        head.appendChild(el('b', null, sk.skill));
+        if (mism) head.appendChild(el('span', 'badge partial', 'расхождение'));
+        box.appendChild(head);
+
+        const grid = el('div', 'skill-grid');
+        const selfCell = el('div', 'cell');
+        selfCell.appendChild(el('div', 'cell-label', 'Самооценка'));
+        const selfSel = el('select'); selfSel.disabled = true;
+        [1, 2, 3, 4].forEach((n) => selfSel.appendChild(new Option(String(n), String(n))));
+        selfSel.value = String(cur);
+        selfCell.appendChild(selfSel);
+        grid.appendChild(selfCell);
+
+        const leadCell = el('div', 'cell');
+        leadCell.appendChild(el('div', 'cell-label', 'Оценка лида'));
+        const leadSel = el('select');
+        leadSel.appendChild(new Option('—', ''));
+        [1, 2, 3, 4].forEach((n) => leadSel.appendChild(new Option(String(n), String(n))));
+        leadSel.value = sk.leadLevel == null ? '' : String(sk.leadLevel);
+        leadCell.appendChild(leadSel);
+        grid.appendChild(leadCell);
+        box.appendChild(grid);
+
+        const cmt = el('div', 'skill-cmt');
+        const sc = el('div', 'field');
+        sc.appendChild(el('label', null, 'Комментарий сотрудника'));
+        const scTa = el('textarea'); scTa.rows = 2; scTa.disabled = true; scTa.value = sk.selfComment || '';
+        sc.appendChild(scTa); cmt.appendChild(sc);
+        const lc = el('div', 'field');
+        lc.appendChild(el('label', null, 'Комментарий лида'));
+        const lcTa = el('textarea'); lcTa.rows = 2; lcTa.value = sk.leadComment || '';
+        lc.appendChild(lcTa); cmt.appendChild(lc);
+        box.appendChild(cmt);
+
+        if (reg) {
+          const descs = el('div', 'skill-desc');
+          descs.appendChild(el('div', 'small-title', `Уровень ${cur}:`));
+          descs.appendChild(el('p', 'level-desc', reg.levels[cur] || 'Описание отсутствует.'));
+          descs.appendChild(el('div', 'small-title', cur < 4 ? `Следующий (${cur + 1}):` : 'Достигнут максимум'));
+          descs.appendChild(el('p', 'level-desc next', cur < 4 ? (reg.levels[cur + 1] || 'Описание отсутствует.') : 'Достигнут максимальный уровень (4).'));
+          box.appendChild(descs);
+        }
+
+        leadItems.push({ idx, sel: leadSel, ta: lcTa, origLeadLevel: sk.leadLevel, origLeadComment: sk.leadComment || '' });
+        body.appendChild(box);
+      });
+      body.appendChild(msg);
+    }
+
+    function renderActive() {
+      body.innerHTML = '';
+      if (activeTab === 'compare') buildCompareTab(body, snapshots);
+      else if (activeTab === 'history') buildHistoryTab(body, snapshots);
+      else if (activeTab === 'progress') buildProgressTab(body, snapshots);
+      else renderProfile();
+      saveBtn.classList.toggle('hidden', activeTab !== 'profile');
+    }
+
+    function switchCardTab(key) {
+      activeTab = key;
+      Object.keys(tabBtns).forEach((k) => tabBtns[k].classList.toggle('active', k === key));
+      renderActive();
+    }
+
+    modal.appendChild(body);
+
+    const footer = el('div', 'modal-footer');
+    const cancel = el('button', null, 'Закрыть');
+    cancel.addEventListener('click', closeModal);
+    const expJson = el('button', 'ghost', 'Экспорт JSON');
+    expJson.addEventListener('click', () => asExportCardJSON(u, latest));
+    const expHtml = el('button', 'ghost', 'Экспорт HTML');
+    expHtml.addEventListener('click', () => asExportCardHTML(u, latest));
+    const saveBtn = el('button', 'primary', 'Сохранить изменения');
+    saveBtn.addEventListener('click', async () => {
+      try {
+        let changed = false;
+        for (const item of leadItems) {
+          const leadLevel = item.sel.value === '' ? null : Number(item.sel.value);
+          const leadComment = item.ta.value;
+          if (leadLevel === item.origLeadLevel && leadComment === item.origLeadComment) continue;
+          changed = true;
+          await api(`/api/assessments/${latest.id}/skills/${item.idx}`, {
+            method: 'PUT',
+            body: { leadLevel, leadComment },
+          });
+        }
+        toast(changed ? 'Изменения сохранены' : 'Изменений не было');
+        closeModal();
+        await loadData();
+      } catch (e) {
+        if (profileMsg) { profileMsg.textContent = e.message; profileMsg.className = 'form-msg error'; }
+        else toast(e.message, 'error');
+      }
+    });
+    footer.appendChild(cancel);
+    footer.appendChild(expJson);
+    footer.appendChild(expHtml);
+    footer.appendChild(saveBtn);
+    modal.appendChild(footer);
+
+    renderProfile();
+    openModal(modal);
+  }
+
+  /* ---------- assessment history sub-tabs ---------- */
+
+  function buildCompareTab(body, snapshots) {
+    body.appendChild(el('p', 'hint', 'Сравнение двух снимков оценок по датам.'));
+    if (snapshots.length < 2) {
+      body.appendChild(el('div', 'empty', 'Нужно не менее двух оценок для сравнения.'));
+      return;
+    }
+    const last = snapshots[snapshots.length - 1];
+    const prev = snapshots[snapshots.length - 2];
+
+    const wrap = el('div');
+    const ctl = el('div', 'cmp-controls');
+    ctl.appendChild(el('span', 'cmp-label', 'Сравнить:'));
+    const selA = dateInput(last.assessmentDate);
+    const selB = dateInput(prev.assessmentDate);
+    ctl.appendChild(selA);
+    ctl.appendChild(el('span', 'cmp-and', ' и '));
+    ctl.appendChild(selB);
+    wrap.appendChild(ctl);
+
+    const tableWrap = el('div');
+    wrap.appendChild(tableWrap);
+    body.appendChild(wrap);
+
+    function snapAt(date) {
+      const got = snapshots.filter((s) => s.assessmentDate === date).sort((a, b) => a.id - b.id);
+      return got.length ? got[got.length - 1] : null;
+    }
+
+    function render() {
+      tableWrap.innerHTML = '';
+      const A = snapAt(selA.value);
+      const B = snapAt(selB.value);
+      if (!A || !B) {
+        tableWrap.appendChild(el('div', 'empty', 'Выберите даты, по которым есть оценки.'));
+        return;
+      }
+      const byId = new Map();
+      [A, B].forEach((snap) => (snap.skills || []).forEach((sk) => {
+        if (!byId.has(sk.skillId)) {
+          byId.set(sk.skillId, { id: sk.skillId, name: sk.skill, reg: registryById(sk.skillId) });
+        }
+      }));
+
+      const tbl = el('table', 'grid');
+      const thead = el('thead');
+      const hr = el('tr');
+      ['Навык', `Самооценка ${fmtShort(A.assessmentDate)} → ${fmtShort(B.assessmentDate)}`,
+        `Оценка лида ${fmtShort(A.assessmentDate)} → ${fmtShort(B.assessmentDate)}`, 'Статус']
+        .forEach((t) => hr.appendChild(el('th', null, t)));
+      thead.appendChild(hr);
+      tbl.appendChild(thead);
+      const tbodyEl = el('tbody');
+
+      byId.forEach((skill) => {
+        const sa = skillInSnapshot(A, skill.id);
+        const sb = skillInSnapshot(B, skill.id);
+        const selfFrom = sa ? sa.selfLevel : null;
+        const selfTo = sb ? sb.selfLevel : null;
+        const leadFrom = sa ? sa.leadLevel : null;
+        const leadTo = sb ? sb.leadLevel : null;
+        const selfCh = changeStr(selfFrom, selfTo);
+        const leadCh = changeStr(leadFrom, leadTo);
+        const changed = !!selfCh || !!leadCh;
+
+        const tr = el('tr');
+        const nameTd = el('td');
+        nameTd.appendChild(el('b', null, skill.name));
+        tr.appendChild(nameTd);
+        tr.appendChild(el('td', selfCh ? 'changed' : null,
+          selfCh || `${fmtLevel(selfFrom)} → ${fmtLevel(selfTo)}`));
+        tr.appendChild(el('td', leadCh ? 'changed' : null,
+          leadCh || `${fmtLevel(leadFrom)} → ${fmtLevel(leadTo)}`));
+        const stTd = el('td');
+        stTd.appendChild(el('span', 'badge ' + (changed ? 'partial' : 'free'), changed ? 'изменился' : 'без изменений'));
+        tr.appendChild(stTd);
+        tbodyEl.appendChild(tr);
+      });
+
+      tbl.appendChild(tbodyEl);
+      tableWrap.appendChild(tbl);
+    }
+
+    render();
+    selA.addEventListener('change', render);
+    selB.addEventListener('change', render);
+  }
+
+  function buildHistoryTab(body, snapshots) {
+    body.appendChild(el('p', 'hint', 'Все записи по сотруднику, сгруппированные по навыкам, в хронологии.'));
+    if (snapshots.length === 0) {
+      body.appendChild(el('div', 'empty', 'Нет ни одной оценки.'));
+      return;
+    }
+
+    const byId = new Map();
+    snapshots.forEach((s) => (s.skills || []).forEach((sk) => {
+      if (!byId.has(sk.skillId)) {
+        byId.set(sk.skillId, { id: sk.skillId, name: sk.skill, reg: registryById(sk.skillId), rows: [] });
+      }
+      byId.get(sk.skillId).rows.push({ date: s.assessmentDate, sk });
+    }));
+
+    const lastSnap = snapshots[snapshots.length - 1];
+    const ordered = Array.from(byId.values())
+      .map((g) => {
+        const li = (lastSnap.skills || []).findIndex((sk) => Number(sk.skillId) === Number(g.id));
+        return { g, li: li === -1 ? Infinity : li };
+      })
+      .sort((a, b) => a.li - b.li);
+
+    ordered.forEach(({ g }) => {
+      const box = el('div', 'skill-card hist-card');
+      box.appendChild(el('div', 'skill-head', g.name));
+
+      const tbl = el('table', 'grid');
+      const thead = el('thead');
+      const hr = el('tr');
+      ['Дата', 'Самооценка', 'Оценка лида', 'Изменение', 'Комментарий сотрудника'].forEach((t) => hr.appendChild(el('th', null, t)));
+      thead.appendChild(hr);
+      tbl.appendChild(thead);
+      const tbodyEl = el('tbody');
+
+      let prevSelf = null;
+      let prevLead = null;
+      let hadSelf = false;
+      let hadLead = false;
+      g.rows.forEach(({ date, sk }) => {
+        const selfCh = hadSelf ? changeStr(prevSelf, sk.selfLevel) : null;
+        const leadCh = hadLead ? changeStr(prevLead, sk.leadLevel) : null;
+        const chText = [selfCh, leadCh].filter(Boolean).join(' · ') || '—';
+
+        const tr = el('tr');
+        tr.appendChild(el('td', null, fmtDate(date)));
+        tr.appendChild(el('td', null, fmtLevel(sk.selfLevel)));
+        tr.appendChild(el('td', null, fmtLevel(sk.leadLevel)));
+        tr.appendChild(el('td', null, chText));
+        tr.appendChild(el('td', null, sk.selfComment || ''));
+        tbodyEl.appendChild(tr);
+
+        prevSelf = sk.selfLevel;
+        prevLead = sk.leadLevel;
+        hadSelf = sk.selfLevel != null;
+        hadLead = sk.leadLevel != null;
+      });
+
+      tbl.appendChild(tbodyEl);
+      box.appendChild(tbl);
+      body.appendChild(box);
+    });
+  }
+
+  function buildProgressTab(body, snapshots) {
+    body.appendChild(el('p', 'hint', 'Изменение уровня по датам оценок: синяя линия — самооценка, жёлтая — оценка лида.'));
+    if (snapshots.length === 0) {
+      body.appendChild(el('div', 'empty', 'Нет ни одной оценки.'));
+      return;
+    }
+    const skills = [];
+    const seen = new Set();
+    [...snapshots].reverse().forEach((s) => (s.skills || []).forEach((sk) => {
+      if (!seen.has(sk.skillId)) {
+        seen.add(sk.skillId);
+        skills.push({ id: sk.skillId, name: sk.skill, reg: registryById(sk.skillId) });
+      }
+    }));
+    if (skills.length === 0) {
+      body.appendChild(el('div', 'empty', 'Нет навыков для отображения.'));
+      return;
+    }
+
+    const ctl = el('div', 'cmp-controls');
+    ctl.appendChild(el('span', 'cmp-label', 'Навык:'));
+    const sel = el('select');
+    skills.forEach((sk) => sel.appendChild(new Option(sk.name, String(sk.id))));
+    ctl.appendChild(sel);
+    body.appendChild(ctl);
+
+    const legend = el('div', 'chart-legend');
+    legend.appendChild(el('span', 'lg-self', '▪ Самооценка'));
+    legend.appendChild(el('span', 'lg-lead', '▪ Оценка лида'));
+    body.appendChild(legend);
+
+    const chartWrap = el('div', 'progress-chart');
+    body.appendChild(chartWrap);
+
+    function draw() {
+      chartWrap.innerHTML = '';
+      renderChart(chartWrap, snapshots, Number(sel.value));
+    }
+    draw();
+    sel.addEventListener('change', draw);
+  }
+
+  function renderChart(wrap, snapshots, skillId) {
+    const W = 720;
+    const H = 240;
+    const PL = 32;
+    const PR = 20;
+    const PT = 16;
+    const PB = 30;
+    const n = snapshots.length;
+    const plotW = W - PL - PR;
+    const plotH = H - PT - PB;
+    const x = (i) => (n === 1 ? PL + plotW / 2 : PL + (plotW * i) / (n - 1));
+    const y = (lv) => PT + plotH - ((lv - 1) / 3) * plotH;
+
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'progress-svg' });
+
+    for (let lv = 1; lv <= 4; lv += 1) {
+      const gy = y(lv);
+      svg.appendChild(svgEl('line', { x1: PL, y1: gy, x2: PL + plotW, y2: gy, class: 'chart-grid', stroke: '#e2e6ec' }));
+      const lbl = svgEl('text', { x: PL - 6, y: gy + 4, class: 'chart-axis-lbl', 'text-anchor': 'end' });
+      lbl.textContent = String(lv);
+      svg.appendChild(lbl);
+    }
+    snapshots.forEach((s, i) => {
+      const lbl = svgEl('text', { x: x(i), y: H - 8, class: 'chart-axis-x', 'text-anchor': 'middle' });
+      lbl.textContent = fmtShort(s.assessmentDate);
+      svg.appendChild(lbl);
+    });
+
+    drawSeries('#0052cc', (s) => { const sk = skillInSnapshot(s, skillId); return sk ? sk.selfLevel : null; });
+    drawSeries('#e08e00', (s) => { const sk = skillInSnapshot(s, skillId); return sk ? sk.leadLevel : null; });
+
+    wrap.appendChild(svg);
+
+    function drawSeries(color, valueOf) {
+      const segs = [];
+      let cur = [];
+      snapshots.forEach((s, i) => {
+        const v = valueOf(s);
+        if (v == null) {
+          if (cur.length) { segs.push(cur); cur = []; }
+          return;
+        }
+        cur.push({ x: x(i), y: y(v), v, i });
+      });
+      if (cur.length) segs.push(cur);
+
+      segs.forEach((seg) => {
+        const d = seg.map((p, k) => (k === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ');
+        svg.appendChild(svgEl('path', { d, fill: 'none', class: 'chart-line', style: 'stroke:' + color }));
+      });
+      snapshots.forEach((s, i) => {
+        const v = valueOf(s);
+        if (v == null) return;
+        svg.appendChild(svgEl('circle', { cx: x(i), cy: y(v), r: 4, fill: color, class: 'chart-dot' }));
+        const lbl = svgEl('text', { x: x(i), y: y(v) - 6, class: 'chart-val', 'text-anchor': 'middle', style: 'fill:' + color });
+        lbl.textContent = String(v);
+        svg.appendChild(lbl);
+      });
+    }
+  }
+
+  function asCardPayload(u, latest) {
+    return {
+      employee: { name: u.name, grade: latest.grade, assessmentDate: latest.assessmentDate },
+      skills: latest.skills.map((sk) => ({
+        skill: sk.skill, level: sk.selfLevel, comment: sk.selfComment || '',
+        leadLevel: sk.leadLevel, leadComment: sk.leadComment || '',
+      })),
+    };
+  }
+
+  function asExportCardJSON(u, latest) {
+    const file = `assessment_${asFileBase(u.name)}_${latest.assessmentDate.replace(/-/g, '')}.json`;
+    download(file, JSON.stringify(asCardPayload(u, latest), null, 2), 'application/json');
+  }
+
+  function asExportCardHTML(u, latest) {
+    const rows = latest.skills.map((sk) => {
+      const reg = registryById(sk.skillId);
+      const cur = Number(sk.selfLevel);
+      const next = cur < 4 ? (reg ? reg.levels[cur + 1] : '') : '—';
+      const curDesc = reg ? reg.levels[cur] : '';
+      const lead = sk.leadLevel == null ? '—' : String(sk.leadLevel);
+      const mism = asMismatch(sk);
+      return `<tr class="${mism ? 'mism' : ''}">
+        <td><b>${escHtml(sk.skill)}</b><div class="desc">${escHtml(curDesc)}</div></td>
+        <td class="c">${escHtml(cur)}</td>
+        <td class="c">${escHtml(lead)}</td>
+        <td>${escHtml(sk.selfComment || '')}</td>
+        <td>${escHtml(sk.leadComment || '')}</td>
+        <td class="next">${escHtml(next)}</td>
+      </tr>`;
+    }).join('');
+    const css = `body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222}
+h2{margin:0 0 4px} .meta{color:#666;margin-bottom:16px}
+table{border-collapse:collapse;width:100%;margin-top:8px}
+th,td{border:1px solid #d0d7de;padding:8px 10px;font-size:13px;vertical-align:top;text-align:left}
+th{background:#f6f8fa}.c{text-align:center;width:60px}.next{color:#0a7}.desc{color:#666;margin-top:4px;font-size:12px}
+tr.mism td{border-color:#d4a72c}.mism{border-left:4px solid #f5c518}
+.pill{display:inline-block;background:#d4a72c;color:#333;border-radius:10px;padding:1px 8px;font-size:12px;margin-bottom:8px}`;
+    const html = `<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>Оценка — ${escHtml(u.name)}</title><style>${css}</style></head>
+<body>
+  <h2>${escHtml(u.name)}</h2>
+  <div class="meta">Грейд: ${escHtml(latest.grade)} · Дата оценки: ${escHtml(latest.assessmentDate)}</div>
+  <span class="pill">Средний уровень (самооценка): ${asAvg(latest)}</span>
+  <table>
+    <thead><tr><th>Навык</th><th>Самооценка</th><th>Оценка лида</th><th>Комментарий сотрудника</th><th>Комментарий лида</th><th>Следующий уровень</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</body></html>`;
+    const file = `assessment_${asFileBase(u.name)}_${latest.assessmentDate.replace(/-/g, '')}.html`;
+    download(file, html, 'text/html;charset=utf-8');
+  }
+
+  function asExportAll() {
+    const employees = state.data.users
+      .map((u) => { const latest = asLatest(u); return latest ? asCardPayload(u, latest) : null; })
+      .filter(Boolean);
+    download(`assessments_export_${stampTime()}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), assessments: employees }, null, 2), 'application/json');
+  }
+
+  function asExportCsv() {
+    const header = ['ФИО', 'Грейд', 'Дата оценки', 'Навык', 'Самооценка', 'Оценка лида', 'Расхождение', 'Комментарий сотрудника', 'Комментарий лида'];
+    const esc = (v) => { v = String(v == null ? '' : v); if (/[";\r\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"'; return v; };
+    const rows = [];
+    state.data.users.forEach((u) => {
+      const latest = asLatest(u);
+      if (!latest) return;
+      latest.skills.forEach((sk) => {
+        const diff = sk.leadLevel == null ? '' : String(Number(sk.leadLevel) - Number(sk.selfLevel));
+        rows.push([u.name, latest.grade, latest.assessmentDate, sk.skill, sk.selfLevel,
+          sk.leadLevel == null ? '' : String(sk.leadLevel), diff, sk.selfComment || '', sk.leadComment || '']);
+      });
+    });
+    const csv = '\uFEFF' + [header, ...rows.map((r) => r.map(esc).join(';'))].join('\r\n');
+    download(`assessments_${stampTime()}.csv`, csv, 'text/csv;charset=utf-8');
+  }
+
+  function asResetImport() {
+    asPendingFile = null;
+    $('#as-file').value = '';
+    $('#as-preview').innerHTML = '';
+    $('#as-preview').classList.add('hidden');
+    $('#as-import').classList.add('hidden');
+    $('#as-cancel').classList.add('hidden');
+  }
+
+  async function onAsFileSelected() {
+    const file = $('#as-file').files[0];
+    if (!file) return asResetImport();
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (e) {
+      toast('Не удалось прочитать JSON: ' + e.message, 'error');
+      return asResetImport();
+    }
+    asPendingFile = parsed;
+    const emp = parsed.employee || {};
+    const skills = Array.isArray(parsed.skills) ? parsed.skills : [];
+    const preview = $('#as-preview');
+    preview.innerHTML = '';
+    preview.appendChild(el('div', 'pv-line', 'ФИО: ' + (emp.name || '—')));
+    preview.appendChild(el('div', 'pv-line', 'Грейд: ' + (emp.grade || '—')));
+    preview.appendChild(el('div', 'pv-line', 'Дата оценки: ' + (emp.assessmentDate || '—')));
+    preview.appendChild(el('div', 'pv-line', 'Навыков: ' + skills.length));
+    preview.classList.remove('hidden');
+    $('#as-import').classList.remove('hidden');
+    $('#as-cancel').classList.remove('hidden');
+  }
+
+  async function importAssessment() {
+    if (!asPendingFile) return;
+    const btn = $('#as-import');
+    btn.disabled = true;
+    try {
+      const a = await api('/api/assessments/import', { method: 'POST', body: asPendingFile });
+      toast(`Оценка сотрудника ${a.name} успешно загружена`);
+      asResetImport();
+      await loadData();
+    } catch (e) {
+      toast(e.message, 'error');
+      btn.disabled = false;
+    }
+  }
+
   /* ---------------- jira integration ---------------- */
 
   let jiraConfig = { configured: false, url: null };
@@ -1536,19 +2217,49 @@
 
   // ---------- checkbox dropdown (projects / assignees) ----------
 
-  function renderDdList(listEl, items, isChecked, onToggle, emptyText, labelOf) {
+  function renderDdList(listEl, items, isChecked, onToggle, emptyText, labelOf, fav) {
     listEl.innerHTML = '';
-    if (!items.length) {
+    if (!items.length && !(fav && fav.favs && fav.favs.length)) {
       listEl.appendChild(el('div', 'dd-empty', emptyText));
       return;
     }
-    items.forEach((it) => {
+    const renderRow = (it) => {
       const row = el('div', 'check-item' + (isChecked(it) ? ' selected' : ''));
       row.appendChild(el('span', null, labelOf(it)));
       if (isChecked(it)) row.appendChild(el('span', 'check-mark', '\u2713'));
+      if (fav) {
+        const faved = fav.favs.includes(fav.favKeyOf(it));
+        const s = el('span', 'fav-star' + (faved ? ' active' : ''), faved ? '\u2605' : '\u2606');
+        s.title = faved ? 'Убрать из избранного' : 'В избранное';
+        s.addEventListener('click', (e) => {
+          e.stopPropagation();
+          fav.toggle(it);
+          if (fav.render) fav.render(); else { fav.favs = fav.favs.slice(); renderDdList(listEl, items, isChecked, onToggle, emptyText, labelOf, fav); }
+        });
+        row.appendChild(s);
+      }
       row.addEventListener('click', () => onToggle(it, !isChecked(it)));
       listEl.appendChild(row);
-    });
+    };
+    if (fav && fav.favs && fav.favs.length && fav.separate) {
+      const pool = fav.fullItems || items;
+      const favItems = pool.filter((it) => fav.favs.includes(fav.favKeyOf(it)));
+      if (favItems.length) {
+        listEl.appendChild(el('div', 'dd-grp-label', 'Избранное'));
+        favItems.forEach(renderRow);
+      }
+      const rest = items.filter((it) => !fav.favs.includes(fav.favKeyOf(it)));
+      if (rest.length) {
+        listEl.appendChild(el('div', 'dd-grp-label', 'Все'));
+        rest.forEach(renderRow);
+      }
+    } else if (fav && fav.favs && fav.favs.length && !fav.separate) {
+      const pool = fav.fullItems || items;
+      const sorted = pool.slice().sort((a, b) => (fav.favs.includes(fav.favKeyOf(b)) ? 1 : 0) - (fav.favs.includes(fav.favKeyOf(a)) ? 1 : 0));
+      sorted.forEach(renderRow);
+    } else {
+      items.forEach(renderRow);
+    }
   }
 
   function bindDdToggle(btnId, panelId) {
@@ -1562,6 +2273,45 @@
     document.addEventListener('click', (e) => {
       if (!panel.classList.contains('hidden') && !panel.contains(e.target) && !btn.contains(e.target)) panel.classList.add('hidden');
     });
+  }
+
+  // ---------- favourites (starred projects / assignees) ----------
+
+  const FAV_PROJECTS_KEY = 'jukiria.fav.projects';
+  const FAV_ASSIGNEES_KEY = 'jukiria.fav.assignees';
+  let favProjects = loadFav(FAV_PROJECTS_KEY);      // array of project keys (lowercased)
+  let favAssignees = loadFav(FAV_ASSIGNEES_KEY);    // array of stable assignee keys
+
+  function loadFav(key) {
+    try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
+    catch (e) { return []; }
+  }
+
+  function saveFav(key, arr) {
+    try { localStorage.setItem(key, JSON.stringify(arr)); } catch (e) { /* нет доступа к localStorage */ }
+  }
+
+  function projectFavKey(p) { return String(p && (p.key || p.name) || '').trim().toLowerCase(); }
+
+  function assigneeFavKey(a) {
+    return String(a && (a.accountId || a.email || a.key || a.name || a.displayName) || '').trim().toLowerCase();
+  }
+
+  function isFavProject(item) { return favProjects.includes(projectFavKey(item)); }
+  function isFavAssignee(item) { return favAssignees.includes(assigneeFavKey(item)); }
+
+  function toggleFavProject(item) {
+    const k = projectFavKey(item);
+    if (!k) return;
+    favProjects = favProjects.includes(k) ? favProjects.filter((x) => x !== k) : favProjects.concat(k);
+    saveFav(FAV_PROJECTS_KEY, favProjects);
+  }
+
+  function toggleFavAssignee(item) {
+    const k = assigneeFavKey(item);
+    if (!k) return;
+    favAssignees = favAssignees.includes(k) ? favAssignees.filter((x) => x !== k) : favAssignees.concat(k);
+    saveFav(FAV_ASSIGNEES_KEY, favAssignees);
   }
 
   // ---------- projects ----------
@@ -1602,7 +2352,15 @@
       (it) => selectedJiraProjects.some((p) => p.key === it.key),
       onProjectToggle,
       'Проекты не загружены.',
-      (it) => `${it.key} — ${it.name}`);
+      (it) => `${it.key} — ${it.name}`,
+      {
+        favs: favProjects,
+        favKeyOf: projectFavKey,
+        toggle: toggleFavProject,
+        fullItems: jiraProjectsCache,
+        separate: true,
+        render: renderProjectList,
+      });
   }
 
   async function loadJiraProjects() {
@@ -1621,6 +2379,7 @@
     }
     refreshProjectToggle();
     loadAssigneesForProjects();
+    renderProjectList();
     if (jiraIssues.length) renderJira();
   }
 
@@ -1662,7 +2421,15 @@
       (it) => selectedJiraAssignees.some((x) => sameIdentity(x, it)),
       onAssigneeToggle,
       selectedJiraProjects.length ? 'Нет исполнителей для выбранных проектов.' : 'Сначала выберите проект, чтобы увидеть исполнителей.',
-      (it) => it.displayName + (it.kind === 'portal' ? ' (портал)' : ''));
+      (it) => it.displayName + (it.kind === 'portal' ? ' (портал)' : ''),
+      {
+        favs: favAssignees,
+        favKeyOf: assigneeFavKey,
+        toggle: toggleFavAssignee,
+        fullItems: jiraAssigneePool,
+        separate: true,
+        render: renderAssigneeList,
+      });
     refreshAssigneeToggle();
   }
 
@@ -1701,6 +2468,7 @@
       selectedJiraAssignees = selectedJiraAssignees.filter((x) => !sameIdentity(x, it));
     }
     refreshAssigneeToggle();
+    renderAssigneeList();
     if (jiraIssues.length) renderJira();
   }
 
@@ -1758,7 +2526,7 @@
   function isRequestedTask(it) {
     const t = it.fields && it.fields.issuetype ? it.fields.issuetype.name : '';
     const n = String(t).trim().toLowerCase();
-    return n === 'задача' || n === 'ошибка';
+    return ['задача', 'ошибка', 'подзадача', 'подзадача.', 'активность'].includes(n);
   }
 
   // Только задачи типа «Задача», находящиеся в актуальном (текущем) спринте.
@@ -1832,7 +2600,7 @@
       try {
         let startAt = 0;
         for (let page = 0; page < 4; page++) {
-          const query = `project = "${key}" AND sprint in openSprints() AND issuetype in ("Задача", "Ошибка")` + asgPart;
+          const query = `project = "${key}" AND sprint in openSprints() AND issuetype in ("Задача", "Ошибка", "Подзадача", 10605, "Активность")` + asgPart;
           const res = await api('/api/jira/search', { method: 'POST', body: { projectKey: '', jql: query, maxResults: PAGE, startAt } });
           totalIssues += Number(res.total) || 0;
           const arr = res.issues || [];
@@ -1880,6 +2648,139 @@
     c.appendChild(el('div', 'jira-card-val', String(value)));
     c.appendChild(el('div', 'jira-card-label', label));
     return c;
+  }
+
+  // Занятость исполнителя по выбранным проектам.
+  // Текущая загрузка  = задачи в активных статусах («в работе») / Ёмкость × 100%
+  // Прогнозная загрузка = («в работе» + «Сделать») / Ёмкость × 100%
+  // Ёмкость задаётся вручную на вкладке и хранится в data.json (per assignee+project).
+  const ACTIVE_STATUSES = ['тестирование', 'разработка', 'в работе'];
+  const TODO_STATUSES = ['сделать'];
+
+  function capacityKeyOf(id) {
+    return String(id && (id.accountId || id.email || id.key || id.name || id.displayName || ''))
+      .trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function capacityFor(id, projectKey) {
+    const k = capacityKeyOf(id);
+    const rec = (state.data.capacities || []).find((c) => c.assignee === k && c.projectKey === projectKey);
+    return rec && Number.isFinite(rec.capacity) ? rec.capacity : null;
+  }
+
+  function statusLabelOf(it) {
+    const st = it && it.fields && it.fields.status && it.fields.status.name;
+    return String(st || '').trim().toLowerCase();
+  }
+
+  function assigneeProjectOccupancy(id) {
+    const rows = [];
+    selectedJiraProjects.forEach((p) => {
+      const mine = jiraIssues.filter((it) =>
+        projectKeyOfIssue(it.key) === p.key && assigneeMatchesTask(id, it.fields && it.fields.assignee)
+      );
+      if (!mine.length) return;
+      let inWork = 0;
+      let todo = 0;
+      mine.forEach((it) => {
+        const st = statusLabelOf(it);
+        if (ACTIVE_STATUSES.indexOf(st) >= 0) inWork += 1;
+        if (TODO_STATUSES.indexOf(st) >= 0) todo += 1;
+      });
+      const capacity = capacityFor(id, p.key);
+      const current = capacity ? (inWork / capacity) * 100 : null;
+      const forecast = capacity ? (todo / capacity) * 100 : null;
+      rows.push({ key: p.key, name: p.name, capacity, inWork, todo, current, forecast });
+    });
+    return rows;
+  }
+
+  async function saveCapacity(id, projectKey, capacity) {
+    const k = capacityKeyOf(id);
+    try {
+      await api('/api/jira/capacities', {
+        method: 'PUT',
+        body: { projectKey, assignee: k, capacity },
+      });
+      state.data.capacities = state.data.capacities || [];
+      const rec = state.data.capacities.find((c) => c.assignee === k && c.projectKey === projectKey);
+      if (rec) {
+        rec.capacity = capacity;
+      } else {
+        const lastId = state.data.capacities.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0);
+        state.data.capacities.push({ id: lastId + 1, assignee: k, projectKey: projectKey, capacity });
+      }
+      if (jiraIssues.length) renderJira();
+    } catch (e) {
+      toast('Не удалось сохранить ёмкость', 'error');
+    }
+  }
+
+  function renderOccupancyBar(label, num, denom, percent) {
+    const wrap = el('div', 'occupancy-load');
+    const top = el('div', 'occupancy-load-top');
+    top.appendChild(el('span', 'occupancy-load-label', label));
+    const pctEl = el('span', 'occupancy-pct' + (percent > 100 ? ' over' : ''),
+      percent == null ? '—' : (Math.round(percent * 10) / 10) + '%');
+    top.appendChild(pctEl);
+    wrap.appendChild(top);
+    const barOuter = el('div', 'occupancy-bar');
+    if (percent != null) {
+      const fill = el('div', 'occupancy-fill' + (percent > 100 ? ' over' : ''));
+      fill.style.width = Math.min(100, percent) + '%';
+      barOuter.appendChild(fill);
+    }
+    wrap.appendChild(barOuter);
+    if (num != null) wrap.appendChild(el('div', 'occupancy-sub', `${num} / ${denom}`));
+    return wrap;
+  }
+
+  function renderAssigneeOccupancy(id) {
+    const rows = assigneeProjectOccupancy(id);
+    const box = el('div', 'occupancy-card');
+    const nameRow = el('div', 'occupancy-name-row');
+    nameRow.appendChild(el('div', 'jira-assignee-name', 'Загрузка по проектам'));
+    const infoEl = el('span', 'occupancy-info', 'i');
+    infoEl.setAttribute('data-tip',
+      'Ёмкость — максимальное количество задач, которое исполнитель может выполнить за период (например, за спринт или неделю) без потери качества.\n\n' +
+      'Текущая загрузка — показывает, чем исполнитель занят прямо сейчас.\n\n' +
+      'Прогнозная загрузка — показывает, сколько задач ему предстоит выполнить.');
+    nameRow.appendChild(infoEl);
+    box.appendChild(nameRow);
+    if (!rows.length) {
+      box.appendChild(el('div', 'occupancy-empty', 'Нет задач по выбранным проектам.'));
+      return box;
+    }
+    rows.forEach((r) => {
+      const row = el('div', 'occupancy-row');
+      const top = el('div', 'occupancy-top');
+      top.appendChild(el('span', 'occupancy-project', r.name));
+
+      const capWrap = el('div', 'occupancy-cap');
+      capWrap.appendChild(el('span', 'occupancy-cap-label', 'Ёмкость'));
+      const capInput = el('input', 'occupancy-cap-input');
+      capInput.type = 'number';
+      capInput.min = '0';
+      capInput.placeholder = '—';
+      capInput.value = r.capacity == null ? '' : String(r.capacity);
+      capInput.addEventListener('change', () => {
+        const v = Number(capInput.value);
+        if (!Number.isFinite(v) || v < 0) return;
+        saveCapacity(id, r.key, v);
+      });
+      capWrap.appendChild(capInput);
+      top.appendChild(capWrap);
+      row.appendChild(top);
+
+      if (r.capacity == null || r.capacity <= 0) {
+        row.appendChild(el('div', 'occupancy-empty', 'Укажите ёмкость, чтобы рассчитать загрузку.'));
+      } else {
+        row.appendChild(renderOccupancyBar('Текущая загрузка', r.inWork, r.capacity, r.current));
+        row.appendChild(renderOccupancyBar('Прогнозная загрузка', r.todo, r.capacity, r.forecast));
+      }
+      box.appendChild(row);
+    });
+    return box;
   }
 
   function renderJiraWarning() {
@@ -1946,6 +2847,10 @@
           ul.appendChild(line);
         });
         card.appendChild(ul);
+
+        // Виджет загрузки по проектам под карточкой исполнителя
+        card.appendChild(renderAssigneeOccupancy(id));
+
         host.appendChild(card);
       });
     }
@@ -2105,6 +3010,20 @@
     $('#add-request').addEventListener('click', openRequestForm);
     $('#req-add-request').addEventListener('click', openRequestForm);
     $('#add-tester').addEventListener('click', openTesterForm);
+    $('#as-file').addEventListener('change', onAsFileSelected);
+    $('#as-import').addEventListener('click', importAssessment);
+    $('#as-cancel').addEventListener('click', asResetImport);
+    for (const sel of ['as-grade', 'as-period', 'as-status']) $(`#${sel}`).addEventListener('change', renderAssessment);
+    $('#as-search').addEventListener('input', renderAssessment);
+    $('#reset-as-filters').addEventListener('click', () => {
+      $('#as-grade').value = '';
+      $('#as-period').value = 'all';
+      $('#as-status').value = '';
+      $('#as-search').value = '';
+      renderAssessment();
+    });
+    $('#as-export-all').addEventListener('click', asExportAll);
+    $('#as-export-csv').addEventListener('click', asExportCsv);
     $('#reg-search').addEventListener('input', renderRegistry);
     $('#reg-cat').addEventListener('change', renderRegistry);
     $('#reset-reg-filters').addEventListener('click', () => {

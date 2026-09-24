@@ -1,0 +1,29 @@
+{
+  "name": "myskills",
+  "version": "1.0.0",
+  "description": "Опросник самооценки навыков QA (отдельный сервис, отдельный .exe)",
+  "private": true,
+  "main": "server.js",
+  "bin": {
+    "myskills": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "sync:registry": "node sync-skill-registry.js",
+    "build:exe": "pkg . --output ../MySkills.exe"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ]
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.12.1"
+  }
+}

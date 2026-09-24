@@ -1,0 +1,120 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --border: #d9dbe1;
+  --text: #172b4d;
+  --muted: #5e6c84;
+  --primary: #0052cc;
+  --primary-hover: #0b66d3;
+  --danger: #bf2600;
+  --ok: #128a0b;
+  --warn: #a15c00;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 16px 60px;
+}
+
+h1 { margin: 8px 0 20px; }
+
+.hidden { display: none !important; }
+
+button {
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+button.primary:hover { background: var(--primary-hover); }
+button.ghost { background: #fff; }
+button.wide { display: block; width: 100%; font-size: 15px; padding: 11px; }
+button:disabled { opacity: .6; cursor: default; }
+
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+.card .intro { margin-top: 0; }
+.card h3 { margin: 16px 0 6px; }
+.howto { margin: 0; padding-left: 18px; color: var(--text); }
+.howto li { margin: 4px 0; }
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; font-size: 12px; color: var(--muted); }
+.field input, .field select {
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; color: var(--text); background: #fff;
+}
+.field input:focus, .field select:focus, textarea:focus { outline: 2px solid #e0ecff; border-color: var(--primary); }
+
+.msg { min-height: 20px; font-size: 13px; margin: 8px 0; color: var(--danger); }
+.form-meta { font-size: 16px; margin-bottom: 16px; }
+
+.block { margin-bottom: 24px; }
+.block-title {
+  font-size: 15px; font-weight: 700; padding: 8px 12px; background: #eef3fb;
+  border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0;
+}
+
+.skill-card-form {
+  background: var(--panel); border: 1px solid var(--border); border-top: none;
+  padding: 14px 16px;
+}
+.skill-card-form:last-of-type { border-radius: 0 0 8px 8px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+
+.skill-name { font-weight: 700; margin-bottom: 8px; }
+
+.opts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.opt {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; background: #fff;
+}
+.opt:hover { background: #f0f2f5; }
+.opt.selected { background: #e0ecff; border-color: var(--primary); }
+.opt input { margin-top: 3px; }
+.lv-num { flex: 0 0 auto; min-width: 44px; font-weight: 600; }
+.lv-desc { color: var(--text); }
+
+.skill-card-form textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 13px; font-family: inherit; resize: vertical; background: #fff; color: var(--text);
+}
+
+.bar { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; }
+
+.hint { color: var(--muted); font-size: 13px; }
+
+.profile-block { margin-bottom: 20px; }
+.profile-block-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.profile-skill {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 8px; cursor: pointer;
+}
+.profile-skill:hover { background: #f0f2f5; }
+.profile-skill .lvl { font-weight: 700; color: var(--primary); }
+
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(9, 30, 66, 0.5); z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal { background: #fff; border-radius: 12px; max-width: 640px; width: 100%; max-height: 90vh; overflow: auto; }
+.modal-header { padding: 16px 20px 0; }
+.modal-header h2 { margin: 0 0 4px; }
+.modal-body { padding: 12px 20px; }
+.modal-footer { padding: 0 20px 18px; display: flex; justify-content: flex-end; gap: 8px; }
+.level-title { font-weight: 700; margin: 12px 0 4px; }
+.level-title.dim { color: var(--muted); }
+.level-text { color: var(--text); margin: 0 0 8px; }
