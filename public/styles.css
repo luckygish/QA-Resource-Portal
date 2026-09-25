@@ -372,6 +372,7 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .cmp-and { color: var(--muted); }
 .cmp-controls input[type="date"] { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 td.changed { background: #fff3cd; }
+.cmp-change-detail { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 .hist-card { margin-bottom: 12px; }
 .hist-card .grid { margin-top: 6px; }
 

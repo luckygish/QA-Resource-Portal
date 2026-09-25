@@ -1802,80 +1802,117 @@
   /* ---------- assessment history sub-tabs ---------- */
 
   function buildCompareTab(body, snapshots) {
-    body.appendChild(el('p', 'hint', 'Сравнение двух снимков оценок по датам.'));
+    body.appendChild(el('p', 'hint', 'Сравнение оценок за выбранный период: показываются все оценки в диапазоне дат, изменившееся — подсвечивается.'));
     if (snapshots.length < 2) {
       body.appendChild(el('div', 'empty', 'Нужно не менее двух оценок для сравнения.'));
       return;
     }
-    const last = snapshots[snapshots.length - 1];
-    const prev = snapshots[snapshots.length - 2];
+    const dates = snapshots.map((s) => s.assessmentDate).slice().sort();
 
     const wrap = el('div');
     const ctl = el('div', 'cmp-controls');
-    ctl.appendChild(el('span', 'cmp-label', 'Сравнить:'));
-    const selA = dateInput(last.assessmentDate);
-    const selB = dateInput(prev.assessmentDate);
-    ctl.appendChild(selA);
-    ctl.appendChild(el('span', 'cmp-and', ' и '));
-    ctl.appendChild(selB);
+    ctl.appendChild(el('span', 'cmp-label', 'Период:'));
+    const selFrom = dateInput(dates[0]);
+    const selTo = dateInput(dates[dates.length - 1]);
+    ctl.appendChild(el('span', 'cmp-and', 'с'));
+    ctl.appendChild(selFrom);
+    ctl.appendChild(el('span', 'cmp-and', 'по'));
+    ctl.appendChild(selTo);
     wrap.appendChild(ctl);
 
     const tableWrap = el('div');
     wrap.appendChild(tableWrap);
     body.appendChild(wrap);
 
-    function snapAt(date) {
-      const got = snapshots.filter((s) => s.assessmentDate === date).sort((a, b) => a.id - b.id);
-      return got.length ? got[got.length - 1] : null;
+    function snapshotsInRange(from, to) {
+      const [a, b] = [from, to].sort();
+      return snapshots
+        .filter((s) => s.assessmentDate >= a && s.assessmentDate <= b)
+        .sort((x, y) => (x.assessmentDate < y.assessmentDate ? -1 : x.assessmentDate > y.assessmentDate ? 1 : x.id - y.id));
+    }
+
+    // Для каждой даты берём последний снимок (по id) — одна колонка на дату оценки.
+    function distinctByDate(inRange) {
+      const map = new Map();
+      inRange.forEach((s) => {
+        const ex = map.get(s.assessmentDate);
+        if (!ex || s.id > ex.id) map.set(s.assessmentDate, s);
+      });
+      return Array.from(map.values()).sort((a, b) =>
+        a.assessmentDate < b.assessmentDate ? -1 : a.assessmentDate > b.assessmentDate ? 1 : a.id - b.id);
     }
 
     function render() {
       tableWrap.innerHTML = '';
-      const A = snapAt(selA.value);
-      const B = snapAt(selB.value);
-      if (!A || !B) {
-        tableWrap.appendChild(el('div', 'empty', 'Выберите даты, по которым есть оценки.'));
+      const from = selFrom.value;
+      const to = selTo.value;
+      if (!from || !to) {
+        tableWrap.appendChild(el('div', 'empty', 'Укажите диапазон дат.'));
         return;
       }
+      const inRange = snapshotsInRange(from, to);
+      if (!inRange.length) {
+        tableWrap.appendChild(el('div', 'empty', 'Нет оценок за выбранный период.'));
+        return;
+      }
+      const selSnaps = distinctByDate(inRange);
+
       const byId = new Map();
-      [A, B].forEach((snap) => (snap.skills || []).forEach((sk) => {
+      selSnaps.forEach((snap) => (snap.skills || []).forEach((sk) => {
         if (!byId.has(sk.skillId)) {
           byId.set(sk.skillId, { id: sk.skillId, name: sk.skill, reg: registryById(sk.skillId) });
         }
       }));
 
+      tableWrap.appendChild(el('div', 'meta', `Оценок в периоде: ${inRange.length} · даты: ${selSnaps.map((s) => fmtShort(s.assessmentDate)).join(', ')}`));
+
       const tbl = el('table', 'grid');
       const thead = el('thead');
       const hr = el('tr');
-      ['Навык', `Самооценка ${fmtShort(A.assessmentDate)} → ${fmtShort(B.assessmentDate)}`,
-        `Оценка лида ${fmtShort(A.assessmentDate)} → ${fmtShort(B.assessmentDate)}`, 'Статус']
-        .forEach((t) => hr.appendChild(el('th', null, t)));
+      hr.appendChild(el('th', null, 'Навык'));
+      selSnaps.forEach((s) => hr.appendChild(el('th', null, `Уровень (самооценка/лид), ${fmtShort(s.assessmentDate)}`)));
+      hr.appendChild(el('th', null, 'Изменение за период'));
       thead.appendChild(hr);
       tbl.appendChild(thead);
       const tbodyEl = el('tbody');
 
       byId.forEach((skill) => {
-        const sa = skillInSnapshot(A, skill.id);
-        const sb = skillInSnapshot(B, skill.id);
-        const selfFrom = sa ? sa.selfLevel : null;
-        const selfTo = sb ? sb.selfLevel : null;
-        const leadFrom = sa ? sa.leadLevel : null;
-        const leadTo = sb ? sb.leadLevel : null;
-        const selfCh = changeStr(selfFrom, selfTo);
-        const leadCh = changeStr(leadFrom, leadTo);
-        const changed = !!selfCh || !!leadCh;
-
         const tr = el('tr');
         const nameTd = el('td');
         nameTd.appendChild(el('b', null, skill.name));
         tr.appendChild(nameTd);
-        tr.appendChild(el('td', selfCh ? 'changed' : null,
-          selfCh || `${fmtLevel(selfFrom)} → ${fmtLevel(selfTo)}`));
-        tr.appendChild(el('td', leadCh ? 'changed' : null,
-          leadCh || `${fmtLevel(leadFrom)} → ${fmtLevel(leadTo)}`));
+
+        let prevSelf = null;
+        let prevLead = null;
+        let hadSelf = false;
+        let hadLead = false;
+        selSnaps.forEach((snap) => {
+          const sk = skillInSnapshot(snap, skill.id);
+          const self = sk ? sk.selfLevel : null;
+          const lead = sk ? sk.leadLevel : null;
+          const changed = (hadSelf && self != null && self !== prevSelf) || (hadLead && lead != null && lead !== prevLead);
+          const cell = el('td', changed ? 'changed' : null);
+          cell.appendChild(el('span', null, `${fmtLevel(self)}/${fmtLevel(lead)}`));
+          tr.appendChild(cell);
+
+          prevSelf = self;
+          prevLead = lead;
+          hadSelf = sk != null;
+          hadLead = sk != null && lead != null;
+        });
+
+        const first = selSnaps[0];
+        const last = selSnaps[selSnaps.length - 1];
+        const s1 = skillInSnapshot(first, skill.id);
+        const s2 = skillInSnapshot(last, skill.id);
+        const selfCh = changeStr(s1 ? s1.selfLevel : null, s2 ? s2.selfLevel : null);
+        const leadCh = changeStr(s1 ? s1.leadLevel : null, s2 ? s2.leadLevel : null);
+        const chText = [selfCh && 'самооценка: ' + selfCh, leadCh && 'лид: ' + leadCh].filter(Boolean).join(' · ') || '—';
         const stTd = el('td');
-        stTd.appendChild(el('span', 'badge ' + (changed ? 'partial' : 'free'), changed ? 'изменился' : 'без изменений'));
+        stTd.appendChild(el('span', 'badge ' + (selfCh || leadCh ? 'partial' : 'free'), selfCh || leadCh ? 'изменился' : 'без изменений'));
+        stTd.appendChild(el('div', 'cmp-change-detail', chText));
         tr.appendChild(stTd);
+
         tbodyEl.appendChild(tr);
       });
 
@@ -1884,8 +1921,8 @@
     }
 
     render();
-    selA.addEventListener('change', render);
-    selB.addEventListener('change', render);
+    selFrom.addEventListener('change', render);
+    selTo.addEventListener('change', render);
   }
 
   function buildHistoryTab(body, snapshots) {
@@ -2078,10 +2115,10 @@
       const curDesc = reg ? reg.levels[cur] : '';
       const lead = sk.leadLevel == null ? '—' : String(sk.leadLevel);
       const mism = asMismatch(sk);
-      return `<tr class="${mism ? 'mism' : ''}">
+      return `<tr>
         <td><b>${escHtml(sk.skill)}</b><div class="desc">${escHtml(curDesc)}</div></td>
         <td class="c">${escHtml(cur)}</td>
-        <td class="c">${escHtml(lead)}</td>
+        <td class="c ${mism ? 'diff' : ''}" title="${mism ? 'Расходится с самооценкой' : ''}">${escHtml(lead)}</td>
         <td>${escHtml(sk.selfComment || '')}</td>
         <td>${escHtml(sk.leadComment || '')}</td>
         <td class="next">${escHtml(next)}</td>
@@ -2092,7 +2129,7 @@ h2{margin:0 0 4px} .meta{color:#666;margin-bottom:16px}
 table{border-collapse:collapse;width:100%;margin-top:8px}
 th,td{border:1px solid #d0d7de;padding:8px 10px;font-size:13px;vertical-align:top;text-align:left}
 th{background:#f6f8fa}.c{text-align:center;width:60px}.next{color:#0a7}.desc{color:#666;margin-top:4px;font-size:12px}
-tr.mism td{border-color:#d4a72c}.mism{border-left:4px solid #f5c518}
+td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
 .pill{display:inline-block;background:#d4a72c;color:#333;border-radius:10px;padding:1px 8px;font-size:12px;margin-bottom:8px}`;
     const html = `<!DOCTYPE html>
 <html lang="ru"><head><meta charset="utf-8"><title>Оценка — ${escHtml(u.name)}</title><style>${css}</style></head>

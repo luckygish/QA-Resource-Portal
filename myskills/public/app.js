@@ -32,11 +32,17 @@
   function startWelcome() {
     $('#welcome-msg').textContent = '';
     var name = $('#name').value.trim();
+    var parts = name.split(/\s+/).filter(Boolean);
+    var partOk = parts.every(function (p) { return /^[A-Za-zА-Яа-яЁё-]+$/.test(p); });
     if (!name) {
       $('#welcome-msg').textContent = 'Укажите ФИО, чтобы продолжить.';
       return;
     }
-    state.name = name;
+    if (parts.length !== 3 || !partOk) {
+      $('#welcome-msg').textContent = 'Введите Фамилию, Имя и Отчество полностью (например, Иванов Иван Иванович).';
+      return;
+    }
+    state.name = parts.join(' ');
     state.grade = $('#grade').value;
     state.answers = {};
     if (state.allSkillNames.length === 0) buildForm();
