@@ -423,3 +423,31 @@ td.changed { background: #fff3cd; }
 .occupancy-fill.over { background: var(--danger); }
 .occupancy-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .occupancy-empty { font-size: 12px; color: var(--muted); margin: 4px 0; }
+
+/* ======= auth / userbar ======= */
+.hidden { display: none !important; }
+.userbar { display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 0 16px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.userbar #user-name { font-weight: 600; color: var(--text); }
+
+.login-screen { position: fixed; inset: 0; z-index: 200; background: linear-gradient(135deg, #0b2447 0%, #123c63 60%, #1769aa 100%); display: flex; align-items: center; justify-content: center; }
+.login-card { background: #fff; border-radius: 12px; padding: 32px 36px; max-width: 400px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+.login-card h2 { margin: 0 0 8px; }
+.login-card p { color: #666; font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
+.login-btn { display: inline-block; text-decoration: none; padding: 10px 22px; font-size: 14px; }
+
+.button { display: inline-flex; align-items: center; justify-content: center; }
+.admin-role-sel { padding: 4px 8px; font-size: 13px; }
+.auth-badge { margin-left: 8px; }
+
+.login-form .field { text-align: left; margin-bottom: 12px; }
+.login-form .field label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--muted); }
+.login-form .field input { width: 100%; padding: 8px 10px; font-size: 14px; border: 1px solid #d7dbe2; border-radius: 6px; box-sizing: border-box; }
+.login-form .form-msg { min-height: 18px; font-size: 13px; color: var(--danger); margin-bottom: 6px; }
+.login-form .login-btn { width: 100%; }
+
+.login-form .login-token-field { padding-top: 4px; border-top: 1px dashed #e3e6ea; }
+.login-form .login-password-toggle { margin-bottom: 8px; }
+.login-form .login-password-toggle .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.login-divider { display: flex; align-items: center; gap: 10px; margin: 16px 0; color: #999; font-size: 12px; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: #e3e6ea; }
+#login-oauth-link { width: 100%; box-sizing: border-box; }

@@ -4,6 +4,13 @@ data.json
 # Jira/Confluence credentials (never commit)
 .jira-config.json
 
+# Database connection config (never commit)
+.db-config.json
+.myskills-config.json
+
+# Docker env (contains secrets; .env.example is the tracked template)
+.env
+
 # Dependencies
 node_modules/
 

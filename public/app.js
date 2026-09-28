@@ -9,8 +9,24 @@
     data: { users: [], projects: [], requests: [], managers: [] },
     currentUserId: null,
     gantt: null,
+    account: null,
+    role: null,
+    leadId: null,
   };
   let modalStack = [];
+
+  // Глобальные флаги прав для фронтенда (роль из /api/auth/me).
+  const isRole = (r) => state.role === r;
+  const canEditRegistries = () => isRole('admin') || isRole('lead');
+  const canAssign = () => isRole('admin') || isRole('lead');
+  const canEditCapacity = () => isRole('admin') || isRole('lead');
+  const ROLE_TABS = {
+    admin: ['resources', 'requests', 'assessment', 'registry', 'projects', 'jira', 'admin'],
+    lead: ['resources', 'requests', 'assessment', 'registry', 'projects', 'jira'],
+    pm: ['requests', 'registry', 'projects', 'jira'],
+    employee: ['my'],
+  };
+  const ROLE_LABEL = { admin: 'Админ', lead: 'Лид', pm: 'ПМ', employee: 'Сотрудник' };
 
   const $ = (sel) => document.querySelector(sel);
   const el = (tag, cls, text) => {
@@ -187,6 +203,171 @@
     }
   }
 
+  /* ---------------- auth ---------------- */
+
+  function setAuthUI(authed) {
+    $('#login-screen').classList.toggle('hidden', !!authed);
+    document.querySelector('.topbar').classList.toggle('hidden', !authed);
+    document.querySelector('main').classList.toggle('hidden', !authed);
+    $('#user-name').textContent = authed ? (state.account.fullName || state.account.email) + ' · ' + (ROLE_LABEL[state.role] || state.role) : '';
+    $('#btn-logout').classList.toggle('hidden', !authed);
+  }
+
+  function applyRoleUI() {
+    const allowed = ROLE_TABS[state.role] || [];
+    document.querySelectorAll('#main-tabs .tab').forEach((t) => {
+      t.classList.toggle('hidden', !allowed.includes(t.dataset.tab));
+    });
+    // Видимость кнопок ресурсов (только Лид/Админ).
+    $('#add-tester').classList.toggle('hidden', !canAssign());
+    // ПМ может создавать свои заявки; ресурсы/оценку/реестры-правку — нет.
+    $('#reg-add').classList.toggle('hidden', !canEditRegistries());
+    $('#proj-add').classList.toggle('hidden', !canEditRegistries());
+    $('#mgr-add').classList.toggle('hidden', !canEditRegistries());
+
+    // Если роль потеряла доступ к текущей вкладке — уходим на первую доступную.
+    const cur = document.querySelector('.tab.active');
+    const curName = cur && cur.dataset.tab;
+    if (curName && !ROLE_TABS[state.role].includes(curName)) {
+      const first = (ROLE_TABS[state.role] || ['my'])[0];
+      switchTab(first);
+    } else if (state.role === 'employee') {
+      switchTab('my');
+    }
+  }
+
+  async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+    window.location.reload();
+  }
+
+  async function checkAuth() {
+    let res = null;
+    try { res = await api('/api/auth/me'); } catch (e) { res = { authed: false }; }
+    if (!res || !res.authed) {
+      bindLoginForm();
+      setAuthUI(false);
+      return;
+    }
+    state.account = res.account;
+    state.role = res.account.role;
+    state.leadId = res.leadId || null;
+    setAuthUI(true);
+    applyRoleUI();
+  }
+
+  function bindLoginForm() {
+    if ($('#login-form').dataset.bound) return;
+    $('#login-form').dataset.bound = '1';
+    const onTogglePassword = () => {
+      const use = $('#login-use-password') && $('#login-use-password').checked;
+      $('#login-password-field').classList.toggle('hidden', !use);
+      if (!use) $('#login-password').value = '';
+    };
+    if ($('#login-use-password')) {
+      $('#login-use-password').addEventListener('change', onTogglePassword);
+    }
+    $('#login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const box = $('#login-msg');
+      box.textContent = '';
+      const username = $('#login-username').value.trim();
+      const password = $('#login-password').value;
+      const token = $('#login-token') ? $('#login-token').value.trim() : '';
+      const usePass = $('#login-use-password') && $('#login-use-password').checked;
+      if (usePass) {
+        if (!username || !password) { box.textContent = 'Укажите логин и пароль локальной тест-УЗ'; return; }
+      } else if (token) {
+        if (!username) { box.textContent = 'Укажите логин Jira вместе с токеном'; return; }
+      } else {
+        box.textContent = 'Укажите личный Jira-токен';
+        return;
+      }
+      try {
+        await api('/api/auth/login', { method: 'POST', body: { username, password, token } });
+        window.location.reload();
+      } catch (err) {
+        box.textContent = err.message || 'Ошибка входа';
+      }
+    });
+  }
+
+  /* ---------------- my page (employee) ---------------- */
+
+  async function renderMyPage() {
+    const host = $('#my-lead-select');
+    host.innerHTML = '';
+    $('#my-lead-status').textContent = '';
+    let my = { account: state.account, leadId: state.leadId };
+    try { my = await api('/api/my'); } catch (e) { /* используем закэшированное */ }
+    state.leadId = my.leadId || state.leadId;
+
+    $('#my-myskills-link').classList.toggle('hidden', false);
+
+    const leads = (await api('/api/leads')).leads || [];
+    const sel = el('select');
+    sel.appendChild(new Option('Выберите Лида', ''));
+    leads.forEach((l) => sel.appendChild(new Option(l.fullName + (l.email ? ' · ' + l.email : ''), String(l.id))));
+    if (state.leadId != null) sel.value = String(state.leadId);
+    sel.addEventListener('change', () => { $('#my-lead-status').textContent = ''; });
+    host.appendChild(sel);
+
+    if (leads.length === 0 && state.leadId == null) {
+      $('#my-lead-status').textContent = 'Лиды ещё не назначены администратором.';
+    } else if (state.leadId != null) {
+      const lead = leads.find((x) => String(x.id) === String(state.leadId));
+      $('#my-lead-status').textContent = 'Ваш Лид: ' + (lead ? lead.fullName : '#' + state.leadId);
+    }
+
+    const bindSave = $('#my-save-lead');
+    if (!bindSave._bound) {
+      bindSave.addEventListener('click', async () => {
+        const v = sel.value;
+        if (!v) { $('#my-lead-status').textContent = 'Выберите Лида.'; return; }
+        try {
+          await api('/api/my/lead', { method: 'PUT', body: { leadId: Number(v) } });
+          state.leadId = Number(v);
+          $('#my-lead-status').textContent = 'Сохранено. Теперь в MySkills выберите этого же Лида, чтобы оценка попала в его пространство.';
+        } catch (e) { $('#my-lead-status').textContent = e.message; }
+      });
+      bindSave._bound = true;
+    }
+  }
+
+  /* ---------------- admin page ---------------- */
+
+  async function renderAdminPage() {
+    const tbody = $('#admin-rows');
+    tbody.innerHTML = '';
+    let accounts = [];
+    try { accounts = (await api('/api/accounts')).accounts || []; } catch (e) { toast(e.message, 'error'); }
+    $('#admin-empty').classList.toggle('hidden', accounts.length > 0);
+
+    accounts.forEach((a) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, a.fullName || '—'));
+      tr.appendChild(el('td', null, a.email));
+      const sel = el('select', 'admin-role-sel');
+      ['admin', 'lead', 'pm', 'employee'].forEach((r) => sel.appendChild(new Option(ROLE_LABEL[r], r)));
+      sel.value = a.role;
+      sel.addEventListener('change', async () => {
+        try {
+          await api(`/api/accounts/${a.id}/role`, { method: 'PUT', body: { role: sel.value } });
+          if (a.id === state.account.id) state.role = sel.value;
+          toast('Роль обновлена');
+        } catch (e) { toast(e.message, 'error'); sel.value = a.role; }
+      });
+      const td = el('td');
+      const cellDiv = el('div');
+      cellDiv.appendChild(sel);
+      if (a.id === state.account.id) cellDiv.appendChild(el('span', 'auth-badge', 'вы'));
+      td.appendChild(cellDiv);
+      tr.appendChild(td);
+      tr.appendChild(el('td', null, a.isActive ? 'активен' : 'заблокирован'));
+      tbody.appendChild(tr);
+    });
+  }
+
   /* ---------------- toast ---------------- */
 
   function toast(msg, type) {
@@ -207,13 +388,17 @@
 
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    ['resources', 'requests', 'assessment', 'registry', 'projects', 'jira'].forEach((id) => {
-      $('#' + id).classList.toggle('hidden', id !== name);
+    const ids = ['resources', 'requests', 'assessment', 'registry', 'projects', 'jira', 'my', 'admin'];
+    ids.forEach((id) => {
+      const panel = document.getElementById(id);
+      if (panel) panel.classList.toggle('hidden', id !== name);
     });
     if (name === 'registry') renderRegistry();
     if (name === 'assessment') renderAssessment();
     if (name === 'projects') switchProjectsSub(projectsSub);
     if (name === 'jira') renderJiraTab();
+    if (name === 'my') renderMyPage();
+    if (name === 'admin') renderAdminPage();
   }
 
   /* ---------------- project filter options ---------------- */
@@ -312,14 +497,16 @@
     state.modalBody = body;
 
     const footer = el('div', 'modal-footer');
-    const del = el('button', 'danger', 'Удалить тестировщика');
-    del.addEventListener('click', async () => {
-      if (!confirm(`Удалить тестировщика «${u.name}»?`)) return;
-      await api(`/api/users/${u.id}`, { method: 'DELETE' });
-      closeModal();
-      await loadData();
-    });
-    footer.appendChild(del);
+    if (canAssign()) {
+      const del = el('button', 'danger', 'Удалить сотрудника');
+      del.addEventListener('click', async () => {
+        if (!confirm(`Удалить сотрудника «${u.name}»?`)) return;
+        await api(`/api/users/${u.id}`, { method: 'DELETE' });
+        closeModal();
+        await loadData();
+      });
+      footer.appendChild(del);
+    }
     footer.appendChild(el('button', 'primary', 'Закрыть'));
     // modal-footer button "Закрыть" here is decorative; actual close via mask
     footer.lastChild.addEventListener('click', closeModal);
@@ -863,7 +1050,7 @@
 
     const actions = el('div', 'row-actions');
 
-    if (r.status === 'Новая') {
+    if (r.status === 'Новая' && canAssign()) {
       const as = el('select');
       as.appendChild(new Option('Назначить...', ''));
       state.data.users.forEach((u) => as.appendChild(new Option(u.name, String(u.id))));
@@ -892,13 +1079,15 @@
     });
     actions.appendChild(st);
 
-    const del = el('button', 'small danger', 'Удалить');
-    del.addEventListener('click', async () => {
-      if (!confirm('Удалить заявку?')) return;
-      await api(`/api/requests/${r.id}`, { method: 'DELETE' });
-      await loadData();
-    });
-    actions.appendChild(del);
+    if (!isRole('employee')) {
+      const del = el('button', 'small danger', 'Удалить');
+      del.addEventListener('click', async () => {
+        if (!confirm('Удалить заявку?')) return;
+        await api(`/api/requests/${r.id}`, { method: 'DELETE' });
+        await loadData();
+      });
+      actions.appendChild(del);
+    }
 
     card.appendChild(actions);
     return card;
@@ -1066,24 +1255,27 @@
       tr.appendChild(el('td', null, p.managerId != null ? managerName(p.managerId) : '—'));
 
       const act = el('td');
-      const edit = el('button', 'small', 'Редактировать');
-      edit.addEventListener('click', () => openProjectCard(p.id));
-      const del = el('button', 'small danger', 'Удалить');
-      del.addEventListener('click', async () => {
-        if (!confirm(`Удалить проект «${p.name}»?`)) return;
-        try {
-          await api(`/api/projects/${p.id}`, { method: 'DELETE' });
-          await loadData();
-        } catch (e) { toast(e.message, 'error'); }
-      });
-      act.appendChild(edit);
-      act.appendChild(del);
+      if (canEditRegistries()) {
+        const edit = el('button', 'small', 'Редактировать');
+        edit.addEventListener('click', () => openProjectCard(p.id));
+        const del = el('button', 'small danger', 'Удалить');
+        del.addEventListener('click', async () => {
+          if (!confirm(`Удалить проект «${p.name}»?`)) return;
+          try {
+            await api(`/api/projects/${p.id}`, { method: 'DELETE' });
+            await loadData();
+          } catch (e) { toast(e.message, 'error'); }
+        });
+        act.appendChild(edit);
+        act.appendChild(del);
+      }
       tr.appendChild(act);
       tbody.appendChild(tr);
     });
   }
 
   function openProjectCard(id) {
+    if (!canEditRegistries()) return toast('Реестр — только чтение для вашей роли', 'error');
     const editing = id != null;
     const src = editing ? projectById(id) : null;
 
@@ -1278,24 +1470,27 @@
       tr.appendChild(projTd);
 
       const act = el('td');
-      const edit = el('button', 'small', 'Редактировать');
-      edit.addEventListener('click', () => openManagerCard(m.id));
-      const del = el('button', 'small danger', 'Удалить');
-      del.addEventListener('click', async () => {
-        if (!confirm(`Удалить менеджера «${m.name}»?`)) return;
-        try {
-          await api(`/api/managers/${m.id}`, { method: 'DELETE' });
-          await loadData();
-        } catch (e) { toast(e.message, 'error'); }
-      });
-      act.appendChild(edit);
-      act.appendChild(del);
+      if (canEditRegistries()) {
+        const edit = el('button', 'small', 'Редактировать');
+        edit.addEventListener('click', () => openManagerCard(m.id));
+        const del = el('button', 'small danger', 'Удалить');
+        del.addEventListener('click', async () => {
+          if (!confirm(`Удалить менеджера «${m.name}»?`)) return;
+          try {
+            await api(`/api/managers/${m.id}`, { method: 'DELETE' });
+            await loadData();
+          } catch (e) { toast(e.message, 'error'); }
+        });
+        act.appendChild(edit);
+        act.appendChild(del);
+      }
       tr.appendChild(act);
       tbody.appendChild(tr);
     });
   }
 
   function openManagerCard(id) {
+    if (!canEditRegistries()) return toast('Реестр — только чтение для вашей роли', 'error');
     const editing = id != null;
     const src = editing ? managerById(id) : null;
 
@@ -1384,24 +1579,27 @@
       tr.appendChild(el('td', null, s.category));
 
       const act = el('td');
-      const edit = el('button', 'small', 'Редактировать');
-      edit.addEventListener('click', () => openSkillCard(s.id));
-      const del = el('button', 'small danger', 'Удалить');
-      del.addEventListener('click', async () => {
-        if (!confirm(`Удалить навык «${s.skill}» из реестра? Он также будет удалён из карточек тестировщиков.`)) return;
-        try {
-          await api(`/api/skills/${s.id}`, { method: 'DELETE' });
-          await loadData();
-        } catch (e) { toast(e.message, 'error'); }
-      });
-      act.appendChild(edit);
-      act.appendChild(del);
+      if (canEditRegistries()) {
+        const edit = el('button', 'small', 'Редактировать');
+        edit.addEventListener('click', () => openSkillCard(s.id));
+        const del = el('button', 'small danger', 'Удалить');
+        del.addEventListener('click', async () => {
+          if (!confirm(`Удалить навык «${s.skill}» из реестра? Он также будет удалён из карточек сотрудников.`)) return;
+          try {
+            await api(`/api/skills/${s.id}`, { method: 'DELETE' });
+            await loadData();
+          } catch (e) { toast(e.message, 'error'); }
+        });
+        act.appendChild(edit);
+        act.appendChild(del);
+      }
       tr.appendChild(act);
       tbody.appendChild(tr);
     });
   }
 
   function openSkillCard(id) {
+    if (!canEditRegistries()) return toast('Реестр — только чтение для вашей роли', 'error');
     const editing = id != null;
     const src = editing ? registryById(id) : null;
 
@@ -2613,7 +2811,7 @@ td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
     loadJiraProjects();
     loadAssigneesForProjects();
     if (!jiraConfig.configured) {
-      jiraStatus('Jira не настроена на сервере: укажите JIRA_URL и JIRA_PERSONAL_TOKEN.', true);
+      jiraStatus('Jira недоступна: проверьте адрес в конфиге и войдите по личному Jira-токену.', true);
       return;
     }
     if (jiraIssues.length) renderJira();
@@ -2626,7 +2824,7 @@ td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
     if (!jiraConfig.configured) {
       try { jiraConfig = await api('/api/jira/health'); } catch (e) { /* ignore */ }
     }
-    if (!jiraConfig.configured) return jiraStatus('Jira не настроена.', true);
+    if (!jiraConfig.configured) return jiraStatus('Jira недоступна: проверьте адрес и войдите по личному токену.', true);
     const asgPart = selectedJiraAssignees.length ? ' AND assignee in (' + assigneeJqlOperands().join(', ') + ')' : '';
     const gathered = [];
     const seen = new Set();
@@ -2800,11 +2998,15 @@ td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
       capInput.min = '0';
       capInput.placeholder = '—';
       capInput.value = r.capacity == null ? '' : String(r.capacity);
-      capInput.addEventListener('change', () => {
-        const v = Number(capInput.value);
-        if (!Number.isFinite(v) || v < 0) return;
-        saveCapacity(id, r.key, v);
-      });
+      capInput.disabled = !canEditCapacity();
+      capInput.title = canEditCapacity() ? '' : 'Ёмкость изменяет только Лид/Админ';
+      if (canEditCapacity()) {
+        capInput.addEventListener('change', () => {
+          const v = Number(capInput.value);
+          if (!Number.isFinite(v) || v < 0) return;
+          saveCapacity(id, r.key, v);
+        });
+      }
       capWrap.appendChild(capInput);
       top.appendChild(capWrap);
       row.appendChild(top);
@@ -3097,12 +3299,13 @@ td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
     $('#jira-tbl-project').addEventListener('change', (e) => { jiraTblProject = e.target.value; if (jiraIssues.length) renderJira(); });
     $('#jira-tbl-status').addEventListener('change', (e) => { jiraTblStatus = e.target.value; if (jiraIssues.length) renderJira(); });
     $('#jira-tbl-priority').addEventListener('change', (e) => { jiraTblPriority = e.target.value; if (jiraIssues.length) renderJira(); });
+    $('#btn-logout').addEventListener('click', logout);
   }
 
   function openTesterForm() {
     const modal = el('div', 'modal');
     const header = el('div', 'modal-header');
-    header.appendChild(el('h2', null, 'Новый тестировщик'));
+    header.appendChild(el('h2', null, 'Новый сотрудник'));
     modal.appendChild(header);
 
     const body = el('div', 'modal-body');
@@ -3209,6 +3412,8 @@ td.diff{outline:2px solid #f5c518;outline-offset:-2px;background:#fff8e6}
     bindTabs();
     bindProjectsTabs();
     bindFilters();
+    await checkAuth();
+    if (!state.account) return;
     await loadData();
   })();
 })();

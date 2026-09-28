@@ -14,17 +14,44 @@ function loadConfig() {
   if (process.env.JIRA_URL) cfg.url = String(process.env.JIRA_URL).replace(/\/+$/, '');
   if (process.env.JIRA_PERSONAL_TOKEN) cfg.token = String(process.env.JIRA_PERSONAL_TOKEN);
 
+  // OAuth 2.0 / 3LO (Jira Data Center) client-приложение.
+  if (process.env.JIRA_OAUTH_CLIENT_ID) cfg.oauthClientId = String(process.env.JIRA_OAUTH_CLIENT_ID).trim();
+  if (process.env.JIRA_OAUTH_CLIENT_SECRET) cfg.oauthClientSecret = String(process.env.JIRA_OAUTH_CLIENT_SECRET).trim();
+  if (process.env.JIRA_OAUTH_REDIRECT_URI) cfg.oauthRedirectUri = String(process.env.JIRA_OAUTH_REDIRECT_URI).trim();
+
   if ((!cfg.url || !cfg.token) && fs.existsSync(CONFIG_PATH)) {
     try {
       const fileCfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
       if (!cfg.url && fileCfg.url) cfg.url = String(fileCfg.url).replace(/\/+$/, '');
       if (!cfg.token && fileCfg.token) cfg.token = String(fileCfg.token);
+      if (!cfg.oauthClientId && fileCfg.oauthClientId) cfg.oauthClientId = String(fileCfg.oauthClientId).trim();
+      if (!cfg.oauthClientSecret && fileCfg.oauthClientSecret) cfg.oauthClientSecret = String(fileCfg.oauthClientSecret).trim();
+      if (!cfg.oauthRedirectUri && fileCfg.oauthRedirectUri) cfg.oauthRedirectUri = String(fileCfg.oauthRedirectUri).trim();
     } catch (e) { /* invalid config file -> ignore */ }
   }
 
   cfg.configured = !!(cfg.url && cfg.token);
+  cfg.oauthConfigured = !!(cfg.url && cfg.oauthClientId && cfg.oauthClientSecret && cfg.oauthRedirectUri);
   cfg.base = cfg.url ? cfg.url + '/rest/api/2' : null;
   return cfg;
+}
+
+function convToken(cfg, token) {
+  if (token) {
+    // Личный токен (из сессии) заменяет конфиговый; пересчитываем configured,
+    // т.к. url + личный токен уже достаточно (серверный token не обязателен).
+    const t = String(token).trim();
+    return { ...cfg, token: t, configured: !!(cfg.url && t) };
+  }
+  return cfg;
+}
+
+function oauthEndpoints(cfg) {
+  const url = /\/$/.test(cfg.url) ? cfg.url.slice(0, -1) : cfg.url;
+  return {
+    authorize: url + '/oauth2/authorize',
+    token: url + '/oauth2/token',
+  };
 }
 
 function notConfigured() {
@@ -134,11 +161,11 @@ function mapUser(u) {
 module.exports = {
   getConfig() {
     const c = loadConfig();
-    return { configured: c.configured, url: c.url };
+    return { configured: c.configured, oauthConfigured: c.oauthConfigured, url: c.url };
   },
 
-  async projects() {
-    const cfg = loadConfig();
+  async projects(token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
     const list = await jiraCall('/project?maxResults=200', cfg);
     return (Array.isArray(list) ? list : []).map((p) => ({
@@ -148,9 +175,10 @@ module.exports = {
     }));
   },
 
-  async search({ projectKey, jql, maxResults, startAt }) {
-    const cfg = loadConfig();
+  async search(opts, token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
+    const { projectKey, jql, maxResults, startAt } = opts || {};
     const query = (jql && String(jql).trim())
       ? String(jql).trim()
       : (projectKey ? `project = "${String(projectKey).toUpperCase()}"` : '');
@@ -179,8 +207,8 @@ module.exports = {
     };
   },
 
-  async users(q) {
-    const cfg = loadConfig();
+  async users(q, token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
     const query = String(q || '').trim();
     if (query) {
@@ -217,8 +245,8 @@ module.exports = {
     return out.slice(0, cap);
   },
 
-  async assignables(projectKeys) {
-    const cfg = loadConfig();
+  async assignables(projectKeys, token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
     const keys = (Array.isArray(projectKeys) ? projectKeys : [])
       .map((k) => String(k).trim().toUpperCase())
@@ -249,8 +277,8 @@ module.exports = {
     return out;
   },
 
-  async activeSprints(projectKeys) {
-    const cfg = loadConfig();
+  async activeSprints(projectKeys, token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
     const keys = (Array.isArray(projectKeys) ? projectKeys : [])
       .map((k) => String(k).trim().toUpperCase())
@@ -283,10 +311,137 @@ module.exports = {
     return map;
   },
 
-  async issue(key) {
-    const cfg = loadConfig();
+  async issue(key, token) {
+    const cfg = convToken(loadConfig(), token);
     if (!cfg.configured) throw notConfigured();
     const fields = SEARCH_FIELD_LIST.concat(['description', 'comment', 'components', 'labels', 'fixVersions', 'resolution']).join(',');
     return jiraCall('/issue/' + encodeURIComponent(key) + '?fields=' + fields, cfg);
+  },
+
+  async myself(token) {
+    const cfg = convToken(loadConfig(), token);
+    if (!cfg.configured) throw notConfigured();
+    const me = await jiraCall('/myself', cfg);
+    return {
+      email: me && me.emailAddress ? me.emailAddress : null,
+      accountId: me && me.accountId ? String(me.accountId) : null,
+      name: me && me.name ? me.name : null,
+      displayName: me && me.displayName ? me.displayName : null,
+    };
+  },
+
+  // Логин-валидация через Basic auth (запасной путь, когда OAuth-клиент не настроен).
+  // Пароль используется только для проверки подлинности и нигде не сохраняется.
+  // Вход по личному Personal Access Token (PAT) вместо Basic. Токен валидируем
+  // через /myself и затем используем в сессии как личный для вкладки Jira.
+  async loginToken(personalToken) {
+    const t = String(personalToken || '').trim();
+    if (!t) { const e = new Error('Укажите Jira-токен'); e.status = 400; throw e; }
+    const cfg = loadConfig();
+    if (!cfg.url) throw notConfigured();
+    const me = await fetch(cfg.base + '/myself', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + t, Accept: 'application/json' },
+    });
+    if (!me.ok) {
+      const e = new Error(me.status === 401 ? 'Неверный Jira-токен' : 'Jira HTTP ' + me.status);
+      e.status = me.status === 401 ? 401 : (me.status || 502);
+      throw e;
+    }
+    const data = await me.json();
+    return {
+      email: data && data.emailAddress ? data.emailAddress : null,
+      accountId: data && data.accountId ? String(data.accountId) : null,
+      name: data && data.name ? data.name : null,
+      displayName: data && data.displayName ? data.displayName : null,
+      token: t,
+    };
+  },
+
+  async loginBasic(username, password) {
+    const base = loadConfig();
+    if (!base.url) throw notConfigured();
+    const res = await fetch(base.base + '/myself', {
+      method: 'GET',
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(String(username || '') + ':' + String(password || '')).toString('base64'),
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) {
+      const e = new Error(res.status === 401 ? 'Неверный логин или пароль' : 'Jira HTTP ' + res.status);
+      e.status = res.status === 401 ? 401 : (res.status || 502);
+      throw e;
+    }
+    const me = await res.json();
+    return {
+      email: me && me.emailAddress ? me.emailAddress : null,
+      accountId: me && me.accountId ? String(me.accountId) : null,
+      name: me && me.name ? me.name : null,
+      displayName: me && me.displayName ? me.displayName : null,
+    };
+  },
+
+  // ---- OAuth 2.0 / 3LO (Jira Data Center) ----
+  getOAuthConfig() {
+    const c = loadConfig();
+    return {
+      configured: c.oauthConfigured,
+      url: c.url,
+      clientId: c.oauthClientId || null,
+      redirectUri: c.oauthRedirectUri || null,
+    };
+  },
+
+  oauthNotConfigured() {
+    const e = new Error('OAuth для Jira не настроен. Задайте JIRA_OAUTH_CLIENT_ID, JIRA_OAUTH_CLIENT_SECRET и JIRA_OAUTH_REDIRECT_URI (или в .jira-config.json).');
+    e.status = 503;
+    return e;
+  },
+
+  getAuthUrl(state, redirectUri) {
+    const cfg = loadConfig();
+    if (!cfg.oauthConfigured) return null;
+    const endpoints = oauthEndpoints(cfg);
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: cfg.oauthClientId,
+      redirect_uri: redirectUri || cfg.oauthRedirectUri,
+      scope: 'read:jira-user read:jira-work offline_access',
+      state,
+    });
+    return endpoints.authorize + '?' + params.toString();
+  },
+
+  async exchangeCode(code, redirectUri) {
+    const cfg = loadConfig();
+    if (!cfg.oauthConfigured) throw this.oauthNotConfigured();
+    const endpoints = oauthEndpoints(cfg);
+    const bodyParams = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: cfg.oauthClientId,
+      client_secret: cfg.oauthClientSecret,
+      code,
+      redirect_uri: redirectUri || cfg.oauthRedirectUri,
+    });
+    const res = await fetch(endpoints.token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: bodyParams.toString(),
+    });
+    const text = await res.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (e) { body = text; }
+    if (!res.ok) {
+      const msg = body && (body.error_description || body.error || body.message) || ('Jira OAuth HTTP ' + res.status);
+      const e = new Error(msg);
+      e.status = res.status;
+      throw e;
+    }
+    return {
+      accessToken: body.access_token || null,
+      refreshToken: body.refresh_token || null,
+      expiresIn: Number(body.expires_in) || null,
+    };
   },
 };

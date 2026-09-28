@@ -1,0 +1,17 @@
+node_modules
+data.json
+.git
+.gitignore
+*.exe
+*.rar
+.kilo
+Dockerfile
+docker-compose.yml
+.env
+.env.*
+!.env.example
+.jira-config.json
+.db-config.json
+.myskills-config.json
+npm-debug.log*
+*.log

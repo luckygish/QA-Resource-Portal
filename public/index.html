@@ -3,22 +3,61 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QA Resource Portal</title>
+  <title>Gnivc Resource Portal</title>
   <link rel="stylesheet" href="vendor/frappe-gantt.min.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>QA Resource Portal</h1>
-    <nav class="tabs">
+    <h1>Gnivc Resource Portal</h1>
+    <nav class="tabs" id="main-tabs">
       <button class="tab active" data-tab="resources">Ресурсы</button>
       <button class="tab" data-tab="requests">Потребности</button>
       <button class="tab" data-tab="assessment">Оценка сотрудников</button>
       <button class="tab" data-tab="registry">Реестр навыков</button>
       <button class="tab" data-tab="projects">Реестр проектов</button>
       <button class="tab" data-tab="jira">Jira</button>
+      <button class="tab hidden" data-tab="my">Моя страница</button>
+      <button class="tab hidden" data-tab="admin">Роли и доступ</button>
     </nav>
+    <div class="userbar" id="userbar">
+      <span id="user-name"></span>
+      <button id="btn-logout" class="ghost hidden">Выход</button>
+    </div>
   </header>
+
+  <!-- ======= Login screen ======= -->
+  <div id="login-screen" class="login-screen hidden">
+    <div class="login-card">
+      <h2>Gnivc Resource Portal</h2>
+      <p>Для продолжения войдите через корпоративную учётную запись Jira.</p>
+
+      <form id="login-form" class="login-form" autocomplete="off">
+        <div class="field">
+          <label>Логин Jira</label>
+          <input type="text" id="login-username" autocomplete="username" placeholder="Логин Jira" />
+        </div>
+        <div class="field login-token-field">
+          <label>Личный Jira-токен (PAT)</label>
+          <input type="password" id="login-token" autocomplete="off" placeholder="Вставьте персональный токен" />
+          <div class="field-hint">Основной способ входа. Вкладка Jira работает под вашими правами.</div>
+        </div>
+        <div class="field login-password-toggle">
+          <label class="toggle">
+            <input type="checkbox" id="login-use-password" />
+            Вход по логину/паролю (только для локальных тест-УЗ)
+          </label>
+        </div>
+        <div class="field login-password-field hidden" id="login-password-field">
+          <label>Пароль</label>
+          <input type="password" id="login-password" autocomplete="current-password" />
+          <div class="field-hint">Доступно только УЗ с локальным паролем в БД (тестовые: testLead, testPM). Корпоративные УЗ входят по токену.</div>
+        </div>
+        <div id="login-msg" class="form-msg"></div>
+        <button type="submit" class="primary login-btn">Войти</button>
+      </form>
+    </div>
+  </div>
 
   <main>
     <!-- ======= Resources tab ======= -->
@@ -50,7 +89,7 @@
           <button id="reset-filters" class="ghost">Сброс</button>
         </div>
         <div class="actions">
-          <button id="add-tester" class="primary">+ Тестировщик</button>
+          <button id="add-tester" class="primary">+ Сотрудник</button>
           <button id="add-request" class="primary">Потребность</button>
         </div>
       </div>
@@ -352,6 +391,45 @@
         </table>
       </div>
       <div id="jira-empty" class="empty hidden">Задач не найдено. Измените выбор проекта или исполнителя.</div>
+    </section>
+
+    <!-- ======= My (employee) tab ======= -->
+    <section id="my" class="tab-panel hidden">
+      <div class="card" style="max-width:720px">
+        <div class="section-title">Моя страница</div>
+        <p class="hint">Сотруднику доступна только эта страница. Выберите своего Лида — оценка из MySkills будет передана в его пространство.</p>
+
+        <div class="field" id="my-lead-field">
+          <label>Ваш Лид</label>
+          <div id="my-lead-select"></div>
+          <div id="my-lead-status" class="field-hint"></div>
+        </div>
+
+        <div class="actions">
+          <button id="my-save-lead" class="primary">Сохранить</button>
+          <a id="my-myskills-link" class="button ghost hidden" target="_blank" rel="noopener">Открыть MySkills</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======= Admin tab ======= -->
+    <section id="admin" class="tab-panel hidden">
+      <div class="card">
+        <div class="section-title">Роли и доступ</div>
+        <p class="hint">Назначение ролей аккаунтов. Аккаунты создаются автоматически при входе через Jira со ролью «Сотрудник»; здесь Админ может изменить роль.</p>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Аккаунт</th>
+              <th>Email</th>
+              <th>Роль</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody id="admin-rows"></tbody>
+        </table>
+        <p id="admin-empty" class="empty hidden">Аккаунтов пока нет.</p>
+      </div>
     </section>
   </main>
 

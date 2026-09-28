@@ -1,19 +1,35 @@
-const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const seed = require('./seed');
 const jira = require('./jira');
 const { spawn } = require('child_process');
+const { createStore } = require('./repo/store');
+const { Auth, hashPassword } = require('./auth');
 
-// When packaged into a single .exe (pkg/SEA), __dirname points into an in-memory
-// snapshot that does not persist writes. Resolve data storage to a real folder
-// next to the executable so data.json survives across runs.
-const APP_DIR = typeof process !== 'undefined' && process.pkg ? path.dirname(process.execPath) : __dirname;
-const DATA_FILE = path.join(APP_DIR, 'data.json');
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
 
 const app = express();
 app.use(express.json());
+
+// Разрешённые источники для CORS (MySkills и др. сервисы портала).
+// Как правило '*' достаточно для офисного использования; можно ограничить через ALLOW_ORIGINS.
+const ALLOW_ORIGINS = (process.env.ALLOW_ORIGINS || '*').split(',').map((s) => s.trim()).filter(Boolean);
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (ALLOW_ORIGINS.includes('*') || (origin && ALLOW_ORIGINS.includes(origin))) {
+    res.setHeader('Access-Control-Allow-Origin', ALLOW_ORIGINS.includes('*') ? '*' : origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// Единый инстанс хранилища (PostgreSQL либо data.json fallback).
+let store = null;
+
+// Аутентификация (лениво читает store по колбеку).
+const auth = new Auth(() => store);
 
 /* ---------------- init / migration ---------------- */
 
@@ -86,7 +102,6 @@ function normalizeData(data) {
         let mgr = data.managers.find((x) => x.name.trim().toLowerCase() === name.toLowerCase());
         if (!mgr) { mgr = { id: nextId(data.managers), name, email: '' }; data.managers.push(mgr); }
         mid = mgr.id;
-        // if the request links to a project without a manager, link the manager to it
         const proj = data.projects.find((p) => p.id === Number(r.projectId));
         if (proj && !proj.managerId && mid != null) { proj.managerId = mid; changed = true; }
       }
@@ -104,29 +119,82 @@ function normalizeData(data) {
   return changed;
 }
 
-function initData() {
-  let data;
-  if (fs.existsSync(DATA_FILE)) {
-    data = readData();
-  } else {
-    // first run with no data file: create an empty baseline so the server
-    // starts cleanly and the seed/migration populates the registry.
-    data = { users: [], projects: [], requests: [], managers: [], skillRegistry: [], categories: [], assessments: [], capacities: [] };
-    writeData(data);
+async function initData() {
+  // data.json слепок, если он есть — для импорта в пустую БД и для fallback.
+  let baseline = null;
+  try {
+    const fs = require('fs');
+    const { appDir } = require('./repo/db');
+    const jsonFile = path.join(appDir(), 'data.json');
+    if (fs.existsSync(jsonFile)) baseline = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+  } catch (e) {
+    console.warn('Не удалось прочитать data.json:', e.message);
   }
-  if (normalizeData(data)) writeData(data);
+
+  if (!baseline) {
+    baseline = { users: [], projects: [], requests: [], managers: [], skillRegistry: [], categories: [], assessments: [], capacities: [] };
+  }
+  if (normalizeData(baseline)) {
+    // помечаем, что рекомендация обновить file имеет смысл только для fallback;
+    // для БД инициализация происходит через seed ниже.
+  }
+
+  if (store && store.__isDb) {
+    // PostgreSQL: если схема пуста — импортировать baseline (data.json или seed).
+    const count = await store.countBusinessRows();
+    if (count === 0) {
+      await store.seed(baseline);
+      console.log('[repo] Импортированы стартовые данные в PostgreSQL (' + (baseline.users || []).length + ' пользователей, ' + (baseline.skillRegistry || []).length + ' навыков).');
+    }
+  }
+}
+
+// Бутстрап локальных аккаунтов:
+//   - butovds — админ по умолчанию (если нет ни одного админа или УЗ есть);
+//   - testLead (Lid) и testPM (PM) — тестовые, вход по локальному паролю 12345678.
+// Тестовые УЗ входят без обращений в Jira (пароль хэшируется локально).
+async function bootstrapAccounts(store) {
+  const upsert = async ({ email, fullName, role, jiraAccountKey, password }) => {
+    let account = email ? await store.findAccountByEmail(email) : null;
+    if (!account) account = await store.findAccountByJiraKey(jiraAccountKey);
+    if (account) {
+      if (account.role !== role) account = await store.setAccountRole(account.id, role);
+    } else {
+      account = await store.createAccount({ email, fullName, role, jiraAccountKey });
+    }
+    if (password) {
+      const existing = await store.getAccountPasswordHash(account.id);
+      if (!existing) await store.setAccountPassword(account.id, hashPassword(password));
+    }
+    return account;
+  };
+
+  // butovds — админ по умолчанию.
+  const admins = await store.listAccounts().then((list) => list.filter((a) => a.role === 'admin'));
+  await upsert({
+    email: process.env.ADMIN_JIRA_EMAIL || 'butovds@gnivc.ru',
+    fullName: process.env.ADMIN_FULL_NAME || 'Бутов Дмитрий Сергеевич',
+    role: 'admin',
+    jiraAccountKey: 'ButovDS',
+    password: process.env.ADMIN_PASSWORD || undefined,
+  });
+  // Если админов всё ещё нет (напр. ADMIN_JIRA_EMAIL указывает на другую УЗ) — гарантируем админа.
+  const stillNoAdmins = await store.listAccounts().then((list) => list.filter((a) => a.role === 'admin').length === 0);
+  if (stillNoAdmins && admins.length === 0) {
+    const fallback = await store.findAccountByJiraKey('ButovDS') || (await store.listAccounts())[0];
+    if (fallback) await store.setAccountRole(fallback.id, 'admin');
+  }
+
+  // Тестовые Лид и ПМ.
+  await upsert({ email: 'testLead@demo.local', fullName: 'Test Lead', role: 'lead', jiraAccountKey: 'testLead', password: '12345678' });
+  await upsert({ email: 'testPM@demo.local', fullName: 'Test PM', role: 'pm', jiraAccountKey: 'testPM', password: '12345678' });
+  console.log('Аккаунты: админ butovds, тестовые testLead (lead), testPM (pm) [пароль 12345678, локальный]');
 }
 
 /* ---------------- storage ---------------- */
 
-function readData() {
-  const raw = fs.readFileSync(DATA_FILE, 'utf8');
-  return JSON.parse(raw);
-}
-
-function writeData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
+function readData() { return store.read(); }
+function writeData(data) { return store.write(data); }
 
 // Serialize mutations (Node is single-threaded, but queue prevents interleaved async reads)
 let queue = Promise.resolve();
@@ -152,7 +220,6 @@ function overlap(aStart, aEnd, bStart, bEnd) {
 }
 
 // For a candidate assignment on a user, find any day where total overlap exceeds 100%.
-// Returns { ok: true } or { ok: false, conflicts: [...] }
 function checkOverload(user, candidate) {
   const relevant = user.assignments.filter((a) => a.id !== candidate.id && overlap(a.start, a.end, candidate.start, candidate.end));
   if (relevant.length === 0) return { ok: true };
@@ -187,7 +254,6 @@ function err(res, code, message, extra = {}) {
 const GRADES = ['Junior', 'Middle', 'Senior', 'Lead'];
 const REQUEST_STATUSES = ['Новая', 'В работе', 'Закрыта', 'Отклонена'];
 
-// normalizes a percent to an integer in 1..100, or null if invalid
 function validPercent(v) {
   const n = Number(v);
   return Number.isFinite(n) && n >= 1 && n <= 100 ? n : null;
@@ -200,30 +266,57 @@ function validateBoolFields(body, fields) {
 
 /* ---------------- API: data/catalog ---------------- */
 
-app.get('/api/data', (req, res) => {
-  res.json(readData());
+// Аутентификация (без сессии -> экран входа).
+app.get('/api/auth/me', (req, res) => auth.me(req, res));
+app.post('/api/auth/logout', (req, res) => auth.logout(req, res));
+app.get('/api/auth/jira/login', (req, res) => auth.login(req, res));
+app.get('/api/auth/jira/callback', (req, res) => auth.callback(req, res));
+// Запасной вход по логину/паролю (Jira Basic), пока OAuth-клиент не настроен.
+app.post('/api/auth/login', (req, res) => auth.loginPassword(req, res));
+
+// Админ-панель.
+app.get('/api/accounts', auth.authRequired, auth.restrict('admin'), (req, res) => auth.listAccounts(req, res));
+app.put('/api/accounts/:id/role', auth.authRequired, auth.restrict('admin'), (req, res) => auth.setRole(req, res));
+
+// Личное пространство сотрудника.
+app.get('/api/leads', (req, res, next) => {
+  // Доступно сотруднику (сессия) и сервисам (MySkills) по внутреннему токену.
+  const svc = req.get('x-portal-token');
+  if (svc && process.env.PORTAL_IMPORT_TOKEN && svc === process.env.PORTAL_IMPORT_TOKEN) return next();
+  return auth.authRequired(req, res, next);
+}, (req, res) => auth.listLeads(req, res));
+app.put('/api/my/lead', auth.authRequired, (req, res) => auth.setMyLead(req, res));
+app.get('/api/my', auth.authRequired, async (req, res) => {
+  const leadId = await store.getLeadLink(req.account.id);
+  res.json({ account: req.account, leadId });
+});
+
+// Ролевая сборка /api/data.
+app.get('/api/data', auth.authRequired, async (req, res) => {
+  res.json(await store.readForRole(req.account.role, req.account.id));
 });
 
 /* ---------------- users ---------------- */
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const { name, grade, email } = req.body || {};
   if (!name || !GRADES.includes(grade)) return err(res, 400, 'Нужны name и валидный grade');
-  withLock(() => {
-    const data = readData();
-    const user = { id: nextId(data.users), name, grade, email: email || '', isOutstaff: !!(req.body || {}).isOutstaff, skills: [], assignments: [] };
+  await withLock(async () => {
+    const data = await readData();
+    const user = { id: nextId(data.users), name, grade, email: email || '', isOutstaff: !!(req.body || {}).isOutstaff, ownerId: req.account.id, skills: [], assignments: [] };
     data.users.push(user);
-    writeData(data);
+    await writeData(data);
     res.json(user);
   });
 });
 
-app.put('/api/users/:id', (req, res) => {
+app.put('/api/users/:id', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     if (req.body && validateBoolFields(req.body, ['name', 'grade'])) {
       if (req.body.grade && !GRADES.includes(req.body.grade)) return err(res, 400, 'Некорректный grade');
       user.name = req.body.name;
@@ -241,52 +334,55 @@ app.put('/api/users/:id', (req, res) => {
       user.about = about;
     }
     if (req.body && 'isOutstaff' in req.body) user.isOutstaff = !!req.body.isOutstaff;
-    writeData(data);
+    await writeData(data);
     res.json(user);
   });
 });
 
-app.delete('/api/users/:id', (req, res) => {
+app.delete('/api/users/:id', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = data.users.findIndex((u) => u.id === id);
-    if (idx === -1) return err(res, 404, 'Тестировщик не найден');
+    if (idx === -1) return err(res, 404, 'Сотрудник не найден');
+    const user = data.users[idx];
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     data.users.splice(idx, 1);
-    // unassign from requests
     data.requests.forEach((r) => {
       if (r.assignedUserId === id) { r.assignedUserId = null; r.status = 'Новая'; }
     });
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
 /* ---------------- user skills ---------------- */
 
-app.post('/api/users/:id/skills', (req, res) => {
+app.post('/api/users/:id/skills', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const { skillId, level } = req.body || {};
   if (skillId === undefined || level === undefined) return err(res, 400, 'Нужны skillId и level');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     if (!data.skillRegistry.some((s) => s.id === Number(skillId))) return err(res, 400, 'Такого навыка нет в реестре');
     const entry = { skillId: Number(skillId), level: Math.min(4, Math.max(1, Number(level))) };
     user.skills.push(entry);
-    writeData(data);
+    await writeData(data);
     res.json(entry);
   });
 });
 
-app.put('/api/users/:id/skills/:idx', (req, res) => {
+app.put('/api/users/:id/skills/:idx', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const idx = Number(req.params.idx);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     if (!user.skills[idx]) return err(res, 404, 'Навык не найден');
     const b = req.body || {};
     if ('skillId' in b) {
@@ -294,55 +390,58 @@ app.put('/api/users/:id/skills/:idx', (req, res) => {
       user.skills[idx].skillId = Number(b.skillId);
     }
     if ('level' in b) user.skills[idx].level = Math.min(4, Math.max(1, Number(b.level)));
-    writeData(data);
+    await writeData(data);
     res.json(user.skills[idx]);
   });
 });
 
-app.delete('/api/users/:id/skills/:idx', (req, res) => {
+app.delete('/api/users/:id/skills/:idx', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const idx = Number(req.params.idx);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     if (!user.skills[idx]) return err(res, 404, 'Навык не найден');
     user.skills.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
 /* ---------------- user assignments ---------------- */
 
-app.post('/api/users/:id/assignments', (req, res) => {
+app.post('/api/users/:id/assignments', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const { projectId, start, end, percent } = req.body || {};
   if (!projectId || !start || !end || percent === undefined) return err(res, 400, 'Нужны projectId, start, end, percent');
   const pct = validPercent(percent);
   if (pct == null) return err(res, 400, 'Занятость должна быть в диапазоне 1–100%');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     if (!data.projects.some((p) => p.id === Number(projectId))) return err(res, 400, 'Проект не найден');
     const candidate = { id: 0, projectId: Number(projectId), start, end, percent: pct };
     const check = checkOverload(user, candidate);
     if (!check.ok) return err(res, 409, 'Перегрузка занятости', { conflicts: check.conflicts });
-    candidate.id = nextId(data.users.flatMap((u) => u.assignments));
+    candidate.id = nextId(data.users.flatMap((u) => u.assignments ? u.assignments : []));
     user.assignments.push(candidate);
-    writeData(data);
+    await writeData(data);
     res.json(candidate);
   });
 });
 
-app.put('/api/users/:id/assignments/:aid', (req, res) => {
+app.put('/api/users/:id/assignments/:aid', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const aid = Number(req.params.aid);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     const a = user.assignments.find((x) => x.id === aid);
     if (!a) return err(res, 404, 'Назначение не найдено');
     const b = req.body || {};
@@ -356,22 +455,23 @@ app.put('/api/users/:id/assignments/:aid', (req, res) => {
     const check = checkOverload(user, candidate);
     if (!check.ok) return err(res, 409, 'Перегрузка занятости', { conflicts: check.conflicts });
     Object.assign(a, candidate, { id: aid });
-    writeData(data);
+    await writeData(data);
     res.json(a);
   });
 });
 
-app.delete('/api/users/:id/assignments/:aid', (req, res) => {
+app.delete('/api/users/:id/assignments/:aid', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const aid = Number(req.params.aid);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const user = data.users.find((u) => u.id === id);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Это чужой сотрудник');
     const idx = user.assignments.findIndex((x) => x.id === aid);
     if (idx === -1) return err(res, 404, 'Назначение не найдено');
     user.assignments.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
@@ -426,20 +526,20 @@ function projectView(p) {
   };
 }
 
-app.get('/api/projects', (req, res) => {
-  res.json(readData().projects.map(projectView));
+app.get('/api/projects', auth.authRequired, async (req, res) => {
+  res.json((await readData()).projects.map(projectView));
 });
 
-app.get('/api/projects/:id', (req, res) => {
-  const data = readData();
+app.get('/api/projects/:id', auth.authRequired, async (req, res) => {
+  const data = await readData();
   const p = data.projects.find((x) => x.id === Number(req.params.id));
   if (!p) return err(res, 404, 'Проект не найден');
   res.json(projectView(p));
 });
 
-app.post('/api/projects', (req, res) => {
-  withLock(() => {
-    const data = readData();
+app.post('/api/projects', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
+  await withLock(async () => {
+    const data = await readData();
     const norm = normalizeProjectBody(data, req.body || {});
     if (!norm.ok) return err(res, 400, norm.error);
     if (!norm.data.name) return err(res, 400, 'Укажите название проекта');
@@ -454,15 +554,15 @@ app.post('/api/projects', (req, res) => {
       jiraKey: b.jiraKey !== undefined ? b.jiraKey : null,
     };
     data.projects.push(p);
-    writeData(data);
+    await writeData(data);
     res.json(projectView(p));
   });
 });
 
-app.put('/api/projects/:id', (req, res) => {
+app.put('/api/projects/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const p = data.projects.find((x) => x.id === id);
     if (!p) return err(res, 404, 'Проект не найден');
     const norm = normalizeProjectBody(data, req.body || {});
@@ -474,15 +574,15 @@ app.put('/api/projects/:id', (req, res) => {
     if (b.managerId !== undefined) p.managerId = b.managerId;
     if (b.jiraKey !== undefined) p.jiraKey = b.jiraKey;
     p.isGovernmentContract = true;
-    writeData(data);
+    await writeData(data);
     res.json(projectView(p));
   });
 });
 
-app.delete('/api/projects/:id', (req, res) => {
+app.delete('/api/projects/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = data.projects.findIndex((x) => x.id === id);
     if (idx === -1) return err(res, 404, 'Проект не найден');
     const usedInAssign = data.users.some((u) => (u.assignments || []).some((a) => a.projectId === id));
@@ -494,42 +594,42 @@ app.delete('/api/projects/:id', (req, res) => {
       return err(res, 409, 'Нельзя удалить: проект используется в ' + why.join(' и '));
     }
     data.projects.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
 /* ---------------- managers (registry) ---------------- */
 
-app.get('/api/managers', (req, res) => {
-  res.json(readData().managers || []);
+app.get('/api/managers', auth.authRequired, async (req, res) => {
+  res.json((await readData()).managers || []);
 });
 
-app.get('/api/managers/:id', (req, res) => {
-  const data = readData();
+app.get('/api/managers/:id', auth.authRequired, async (req, res) => {
+  const data = await readData();
   const m = data.managers.find((x) => x.id === Number(req.params.id));
   if (!m) return err(res, 404, 'Менеджер не найден');
   res.json(m);
 });
 
-app.post('/api/managers', (req, res) => {
-  withLock(() => {
-    const data = readData();
+app.post('/api/managers', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
+  await withLock(async () => {
+    const data = await readData();
     const name = String((req.body || {}).name || '').trim();
     if (!name) return err(res, 400, 'Укажите имя менеджера');
     if (data.managers.some((m) => m.name.trim().toLowerCase() === name.toLowerCase())) return err(res, 409, 'Менеджер с таким именем уже существует');
     const email = req.body.email === undefined ? '' : String(req.body.email).trim();
     const m = { id: nextId(data.managers), name, email };
     data.managers.push(m);
-    writeData(data);
+    await writeData(data);
     res.json(m);
   });
 });
 
-app.put('/api/managers/:id', (req, res) => {
+app.put('/api/managers/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const m = data.managers.find((x) => x.id === id);
     if (!m) return err(res, 404, 'Менеджер не найден');
     const b = req.body || {};
@@ -540,35 +640,35 @@ app.put('/api/managers/:id', (req, res) => {
       m.name = name;
     }
     if (b.email !== undefined) m.email = String(b.email).trim();
-    writeData(data);
+    await writeData(data);
     res.json(m);
   });
 });
 
-app.delete('/api/managers/:id', (req, res) => {
+app.delete('/api/managers/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = data.managers.findIndex((x) => x.id === id);
     if (idx === -1) return err(res, 404, 'Менеджер не найден');
     if (data.projects.some((p) => p.managerId === id)) return err(res, 409, 'Нельзя удалить: менеджер назначен на проекты');
     data.managers.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
 /* ---------------- requests ---------------- */
 
-app.post('/api/requests', (req, res) => {
+app.post('/api/requests', auth.authRequired, auth.restrict('admin', 'lead', 'pm'), async (req, res) => {
   const { projectId, grade, start, end, percent, comment, managerId } = req.body || {};
   const pct = validPercent(percent);
   if (!projectId || !grade || !start || !end || pct == null) return err(res, 400, 'Нужны projectId, grade, start, end, percent');
   if (!GRADES.includes(grade)) return err(res, 400, 'Некорректный grade');
   if (!comment || !String(comment).trim()) return err(res, 400, 'Комментарий обязателен');
   if (managerId == null || managerId === '') return err(res, 400, 'Менеджер проекта обязателен');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     if (!data.projects.some((p) => p.id === Number(projectId))) return err(res, 400, 'Проект не найден');
     const mid = Number(managerId);
     if (!data.managers.some((m) => m.id === mid)) return err(res, 400, 'Менеджер не найден в реестре');
@@ -583,19 +683,21 @@ app.post('/api/requests', (req, res) => {
       comment: String(comment).trim(),
       managerId: mid,
       assignedUserId: null,
+      createdBy: req.account.id,
     };
     data.requests.push(r);
-    writeData(data);
+    await writeData(data);
     res.json(r);
   });
 });
 
-app.put('/api/requests/:id', (req, res) => {
+app.put('/api/requests/:id', auth.authRequired, auth.restrict('admin', 'lead', 'pm'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const r = data.requests.find((x) => x.id === id);
     if (!r) return err(res, 404, 'Заявка не найдена');
+    if (req.account.role === 'pm' && r.createdBy !== req.account.id) return err(res, 403, 'Это чужая заявка');
     const b = req.body || {};
     for (const key of ['projectId', 'grade', 'start', 'end', 'comment', 'managerId']) {
       if (key in b) r[key] = b[key];
@@ -616,43 +718,45 @@ app.put('/api/requests/:id', (req, res) => {
       if (!REQUEST_STATUSES.includes(b.status)) return err(res, 400, 'Некорректный статус');
       r.status = b.status;
     }
-    writeData(data);
+    await writeData(data);
     res.json(r);
   });
 });
 
-app.delete('/api/requests/:id', (req, res) => {
+app.delete('/api/requests/:id', auth.authRequired, auth.restrict('admin', 'lead', 'pm'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = data.requests.findIndex((x) => x.id === id);
     if (idx === -1) return err(res, 404, 'Заявка не найдена');
+    if (req.account.role === 'pm' && data.requests[idx].createdBy !== req.account.id) return err(res, 403, 'Это чужая заявка');
     data.requests.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
 /* assign a tester to a request */
-app.post('/api/requests/:id/assign', (req, res) => {
+app.post('/api/requests/:id/assign', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const userId = Number((req.body || {}).userId);
   if (!userId) return err(res, 400, 'Нужен userId');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const r = data.requests.find((x) => x.id === id);
     if (!r) return err(res, 404, 'Заявка не найдена');
-    if (r.assignedUserId) return err(res, 409, 'Заявка уже имеет назначенного тестировщика');
+    if (r.assignedUserId) return err(res, 409, 'Заявка уже имеет назначенного сотрудника');
     const user = data.users.find((u) => u.id === userId);
-    if (!user) return err(res, 404, 'Тестировщик не найден');
+    if (!user) return err(res, 404, 'Сотрудник не найден');
+    if (req.account.role !== 'admin' && user.ownerId !== req.account.id) return err(res, 403, 'Можно назначать только своего сотрудника');
     const candidate = { id: 0, projectId: r.projectId, start: r.start, end: r.end, percent: r.percent };
     const check = checkOverload(user, candidate);
     if (!check.ok) return err(res, 409, 'Пересечение периодов или перегрузка занятости', { conflicts: check.conflicts });
-    candidate.id = nextId(data.users.flatMap((u) => u.assignments));
+    candidate.id = nextId(data.users.flatMap((u) => u.assignments ? u.assignments : []));
     user.assignments.push(candidate);
     r.assignedUserId = userId;
     r.status = 'В работе';
-    writeData(data);
+    await writeData(data);
     res.json({ request: r, assignment: candidate });
   });
 });
@@ -676,39 +780,39 @@ function validLevels(obj) {
   return out;
 }
 
-app.get('/api/skills', (req, res) => {
-  const data = readData();
+app.get('/api/skills', auth.authRequired, async (req, res) => {
+  const data = await readData();
   res.json(data.skillRegistry.map((s) => ({ id: s.id, skill: s.skill, category: s.category })));
 });
 
-app.get('/api/skills/:id', (req, res) => {
-  const data = readData();
+app.get('/api/skills/:id', auth.authRequired, async (req, res) => {
+  const data = await readData();
   const s = registrySkill(res, data, req.params.id);
   if (s) res.json(s);
 });
 
-app.post('/api/skills', (req, res) => {
+app.post('/api/skills', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const { skill, category, levels } = req.body || {};
   const lv = validLevels(levels);
   if (!skill || !String(skill).trim()) return err(res, 400, 'Нужно название навыка');
   if (!category || !String(category).trim()) return err(res, 400, 'Нужна категория');
   if (!lv) return err(res, 400, 'Нужны описания уровней 1–4');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const name = String(skill).trim();
     if (data.skillRegistry.some((x) => x.skill.trim().toLowerCase() === name.toLowerCase())) return err(res, 409, 'Навык с таким названием уже есть');
     if (!data.categories.some((c) => c.name === String(category).trim())) return err(res, 400, 'Категория не найдена');
     const item = { id: nextId(data.skillRegistry), skill: name, category: String(category).trim(), levels: lv };
     data.skillRegistry.push(item);
-    writeData(data);
+    await writeData(data);
     res.json(item);
   });
 });
 
-app.put('/api/skills/:id', (req, res) => {
+app.put('/api/skills/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const lv = validLevels(req.body ? req.body.levels : null);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const item = registrySkill(res, data, req.params.id);
     if (!item) return;
     const b = req.body || {};
@@ -723,51 +827,72 @@ app.put('/api/skills/:id', (req, res) => {
     }
     if (lv) item.levels = lv;
     else if (req.body && 'levels' in req.body) return err(res, 400, 'Нужны корректные описания уровней 1–4');
-    writeData(data);
+    await writeData(data);
     res.json(item);
   });
 });
 
-app.delete('/api/skills/:id', (req, res) => {
+app.delete('/api/skills/:id', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = data.skillRegistry.findIndex((x) => x.id === id);
     if (idx === -1) return err(res, 404, 'Навык не найден в реестре');
     data.skillRegistry.splice(idx, 1);
     (data.users || []).forEach((u) => {
       u.skills = (u.skills || []).filter((sk) => !(sk && sk.skillId === id));
     });
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
-app.get('/api/categories', (req, res) => {
-  res.json(readData().categories);
+app.get('/api/categories', auth.authRequired, async (req, res) => {
+  res.json((await readData()).categories);
 });
 
-app.post('/api/categories', (req, res) => {
+app.post('/api/categories', auth.authRequired, auth.restrict('admin', 'lead'), async (req, res) => {
   const name = String((req.body || {}).name || '').trim();
   if (!name) return err(res, 400, 'Нужно название категории');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     if (data.categories.some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) return err(res, 409, 'Категория уже существует');
     const cat = { id: nextId(data.categories), name };
     data.categories.push(cat);
-    writeData(data);
+    await writeData(data);
     res.json(cat);
   });
 });
 
 /* ---------------- employee assessments ---------------- */
 
-app.get('/api/assessments', (req, res) => {
-  res.json({ assessments: readData().assessments || [] });
+app.get('/api/assessments', auth.authRequired, async (req, res) => {
+  const roleData = await store.readForRole(req.account.role, req.account.id);
+  res.json({ assessments: roleData.assessments || [] });
 });
 
-app.post('/api/assessments/import', (req, res) => {
+app.post('/api/assessments/import', async (req, res) => {
   const body = req.body || {};
+
+  // Аутентификация импорта: внутренний токен (MySkills) ИЛИ сессия админа/лида.
+  const { parseCookies, COOKIE_NAME } = require('./auth');
+  const svcToken = req.get('x-portal-token');
+  let role = null;
+  let ownerBySession = null;
+  if (svcToken && process.env.PORTAL_IMPORT_TOKEN && svcToken === process.env.PORTAL_IMPORT_TOKEN) {
+    role = 'service';
+  } else {
+    const sessToken = parseCookies(req.headers.cookie || '')[COOKIE_NAME];
+    if (sessToken) {
+      const sess = await store.findSession(sessToken);
+      if (sess && (sess.account.role === 'admin' || sess.account.role === 'lead')) {
+        role = sess.account.role;
+        ownerBySession = sess.account.id;
+      }
+    }
+  }
+  if (!role) return err(res, 403, 'Доступно только через MySkills (внутренний токен) или администратору/лиду');
+
   const employee = body.employee || {};
   const name = String(employee.name || '').trim();
   const grade = String(employee.grade || '').trim();
@@ -779,8 +904,25 @@ app.post('/api/assessments/import', (req, res) => {
   if (!assessmentDate) return err(res, 400, 'Укажите дату оценки');
   if (skills.length === 0) return err(res, 400, 'Файл не содержит навыков');
 
-  withLock(() => {
-    const data = readData();
+  // Владелец оценки (пространство Лида). Приоритет: leadAccountId из тела -> сессия лида.
+  let ownerId = Number(body.leadAccountId != null ? body.leadAccountId : ownerBySession) || null;
+  // Альтернатива: Лид задан вручную (ФИО/email) — резолвим к аккаунту-лиду портала.
+  if (!ownerId && body.leadName) {
+    const q = String(body.leadName).trim().toLowerCase();
+    if (q) {
+      const accounts = (await store.listAccounts()) || [];
+      const lead = accounts.find((a) => a.role === 'lead' && a.isActive && (
+        (a.fullName || '').trim().toLowerCase().includes(q) ||
+        (a.email || '').trim().toLowerCase().includes(q) ||
+        q.includes((a.fullName || '').trim().toLowerCase()) ||
+        q.includes((a.email || '').trim().toLowerCase())
+      ));
+      if (lead) ownerId = lead.id;
+    }
+  }
+
+  await withLock(async () => {
+    const data = await readData();
     const unknown = [];
     const mapped = [];
     for (const s of skills) {
@@ -806,25 +948,28 @@ app.post('/api/assessments/import', (req, res) => {
     let user = data.users.find((u) => key(u.name) === key(name));
     let userId = user ? user.id : null;
     if (!user) {
-      user = { id: nextId(data.users), name, grade, email: '', isOutstaff: false, skills: [], assignments: [] };
+      user = { id: nextId(data.users), name, grade, email: '', isOutstaff: false, ownerId, skills: [], assignments: [] };
       data.users.push(user);
       userId = user.id;
+    } else if (ownerId != null && !user.ownerId) {
+      user.ownerId = ownerId;
     }
 
-    const assessment = { id: nextId(data.assessments), userId, name, grade, assessmentDate, skills: mapped };
+    const assessment = { id: nextId(data.assessments), userId, name, grade, assessmentDate, ownerId, skills: mapped };
     data.assessments.push(assessment);
-    writeData(data);
+    await writeData(data);
     res.status(201).json(assessment);
   });
 });
 
-app.put('/api/assessments/:id/skills/:idx', (req, res) => {
+app.put('/api/assessments/:id/skills/:idx', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
   const idx = Number(req.params.idx);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const a = (data.assessments || []).find((x) => x.id === id);
     if (!a) return err(res, 404, 'Оценка не найдена');
+    if (req.account.role !== 'admin' && a.ownerId !== req.account.id) return err(res, 403, 'Это чужое пространство');
     if (!a.skills[idx]) return err(res, 404, 'Навык не найден');
     const b = req.body || {};
     if ('leadLevel' in b) {
@@ -833,97 +978,120 @@ app.put('/api/assessments/:id/skills/:idx', (req, res) => {
       a.skills[idx].leadLevel = lv;
     }
     if ('leadComment' in b) a.skills[idx].leadComment = String(b.leadComment == null ? '' : b.leadComment);
-    writeData(data);
+    await writeData(data);
     res.json(a.skills[idx]);
   });
 });
 
-app.delete('/api/assessments/:id', (req, res) => {
+app.delete('/api/assessments/:id', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const id = Number(req.params.id);
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const idx = (data.assessments || []).findIndex((x) => x.id === id);
     if (idx === -1) return err(res, 404, 'Оценка не найдена');
+    if (req.account.role !== 'admin' && data.assessments[idx].ownerId !== req.account.id) return err(res, 403, 'Это чужое пространство');
     data.assessments.splice(idx, 1);
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true });
   });
 });
 
-/* ---------------- Jira integration (read-only proxy) ---------------- */
+/* ---------------- Jira integration (proxy личным токеном) ---------------- */
 
-// Occupancy capacities (manual, per assignee+project) stored in data.json
-app.get('/api/jira/capacities', (req, res) => {
-  res.json({ capacities: readData().capacities || [] });
+app.get('/api/jira/capacities', auth.authRequired, async (req, res) => {
+  const roleData = await store.readForRole(req.account.role, req.account.id);
+  res.json({ capacities: roleData.capacities || [] });
 });
 
-app.put('/api/jira/capacities', (req, res) => {
+// Ёмкость устанавливают только Лид/Админ; ПМ — только чтение.
+app.put('/api/jira/capacities', auth.authRequired, auth.restrict('lead', 'admin'), async (req, res) => {
   const b = req.body || {};
   const projectKey = String(b.projectKey || '').trim();
   const assignee = String(b.assignee || '').trim();
   if (!projectKey || !assignee) return err(res, 400, 'Нужны projectKey и assignee');
   const capacity = Number(b.capacity);
   if (!Number.isFinite(capacity) || capacity < 0) return err(res, 400, 'Ёмкость должна быть неотрицательным числом');
-  withLock(() => {
-    const data = readData();
+  await withLock(async () => {
+    const data = await readData();
     const rec = (data.capacities || []).find((c) => c.assignee === assignee && c.projectKey === projectKey);
     if (rec) {
       rec.capacity = capacity;
+      if (!rec.ownerId && req.account.role === 'lead') rec.ownerId = req.account.id;
     } else {
-      data.capacities.push({ id: nextId(data.capacities), assignee, projectKey, capacity });
+      data.capacities.push({ id: nextId(data.capacities), assignee, projectKey, capacity, ownerId: req.account.role === 'lead' ? req.account.id : null });
     }
-    writeData(data);
+    await writeData(data);
     res.json({ ok: true, capacities: data.capacities });
   });
 });
 
-app.get('/api/jira/health', (req, res) => {
-  res.json(jira.getConfig());
+app.get('/api/jira/health', async (req, res) => {
+  // Здоровье учитывает личный токен сессии: если пользователь вошёл по личному
+  // токену (или OAuth) и у сессии есть jiraAccessToken — Jira считается доступной,
+  // даже когда в .jira-config.json нет серверного token.
+  const { parseCookies, COOKIE_NAME } = require('./auth');
+  const base = jira.getConfig();
+  let sessionToken = null;
+  try {
+    const token = parseCookies(req.headers.cookie || '')[COOKIE_NAME];
+    if (token) {
+      const session = await store.findSession(token);
+      if (session) sessionToken = session.jiraAccessToken || null;
+    }
+  } catch (e) { /* ignore */ }
+  res.json({
+    ...base,
+    configured: base.configured || Boolean(base.url && sessionToken),
+  });
 });
 
-app.get('/api/jira/projects', async (req, res) => {
+function jiraToken(req) {
+  return (req.session && req.session.jiraAccessToken) || null;
+}
+
+app.get('/api/jira/projects', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.projects());
+    res.json(await jira.projects(jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
 });
 
-app.post('/api/jira/search', async (req, res) => {
+app.post('/api/jira/search', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.search(req.body || {}));
+    res.json(await jira.search(req.body || {}, jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
 });
 
-app.get('/api/jira/users', async (req, res) => {
+app.get('/api/jira/users', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.users(req.query.q));
+    res.json(await jira.users(req.query.q, jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
 });
 
-app.post('/api/jira/assignables', async (req, res) => {
+app.post('/api/jira/assignables', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.assignables(((req.body || {}).projectKeys) || []));
+    res.json(await jira.assignables(((req.body || {}).projectKeys) || [], jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
 });
 
-app.post('/api/jira/active-sprints', async (req, res) => {
+app.post('/api/jira/active-sprints', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.activeSprints(((req.body || {}).projectKeys) || []));
+    res.json(await jira.activeSprints(((req.body || {}).projectKeys) || [], jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
 });
 
-app.get('/api/jira/issue/:key', async (req, res) => {
+app.get('/api/jira/issue/:key', auth.authRequired, auth.restrict('lead', 'pm', 'admin'), async (req, res) => {
   try {
-    res.json(await jira.issue(req.params.key));
+    res.json(await jira.issue(req.params.key, jiraToken(req)));
   } catch (e) {
     err(res, e.status || 502, e.message);
   }
@@ -965,7 +1133,12 @@ function listen(port) {
 }
 
 (async function start() {
-  initData();
+  // Инициализация хранилища (PostgreSQL при доступности, иначе fallback на data.json).
+  store = await createStore();
+  store.__isDb = store.constructor.name === 'PgStore';
+  await initData();
+  await bootstrapAccounts(store);
+
   let server = null;
   let port = DEFAULT_PORT;
   for (let i = 0; i < 100; i += 1) {
@@ -979,7 +1152,7 @@ function listen(port) {
   }
   const actual = server.address().port;
   const url = `http://localhost:${actual}`;
-  console.log(`QA Resource Portal listening on ${url}`);
-  console.log(`Data file: ${DATA_FILE}`);
+  console.log(`Gnivc Resource Portal listening on ${url}`);
+  console.log(`Storage: ${store.__isDb ? 'PostgreSQL' : 'data.json'}`);
   openBrowser(url);
 })();

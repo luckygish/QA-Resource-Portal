@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-qa_portal}
+      POSTGRES_USER: ${DB_USER:-portal}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-portal_pwd}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-portal} -d ${DB_NAME:-qa_portal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORTAL_PORT:-3001}:3001"
+    environment:
+      PORT: 3001
+      PORTAL_NO_OPEN: "1"
+      PG_ENABLED: "1"
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-qa_portal}
+      DB_USER: ${DB_USER:-portal}
+      DB_PASSWORD: ${DB_PASSWORD:-portal_pwd}
+
+      # Jira-интеграция (см. .env / шаблон .env.example)
+      JIRA_URL: ${JIRA_URL:-https://jira.gnivc.ru}
+      JIRA_PERSONAL_TOKEN: ${JIRA_PERSONAL_TOKEN:-}
+      JIRA_OAUTH_CLIENT_ID: ${JIRA_OAUTH_CLIENT_ID:-}
+      JIRA_OAUTH_CLIENT_SECRET: ${JIRA_OAUTH_CLIENT_SECRET:-}
+      JIRA_OAUTH_REDIRECT_URI: ${JIRA_OAUTH_REDIRECT_URI:-}
+
+      # Первый/основной админ
+      ADMIN_JIRA_EMAIL: ${ADMIN_JIRA_EMAIL:-}
+
+      # Внутренний токен: MySkills -> портал (должен совпадать с myskills.PORTAL_IMPORT_TOKEN)
+      PORTAL_IMPORT_TOKEN: ${PORTAL_IMPORT_TOKEN:-}
+
+      # Разрешить MySkills (др. порт/источник) сохранять оценки
+      ALLOW_ORIGINS: "*"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  myskills:
+    build:
+      context: ./myskills
+      dockerfile: Dockerfile
+    ports:
+      - "${MYSKILLS_PORT:-3200}:3200"
+    environment:
+      MYSKILLS_PORT: 3200
+      MYSKILLS_NO_OPEN: "1"
+      # Адрес портала для сохранения оценок в общую БД
+      MYSKILLS_PORTAL_URL: "http://portal:3001"
+      # Внутренний токен (совпадает с portal.PORTAL_IMPORT_TOKEN)
+      PORTAL_IMPORT_TOKEN: ${PORTAL_IMPORT_TOKEN:-}
+    depends_on:
+      portal:
+        condition: service_started
+
+volumes:
+  pgdata:
