@@ -9,30 +9,54 @@ const path = require('path');
 const APP_DIR = typeof process !== 'undefined' && process.pkg ? path.dirname(process.execPath) : __dirname;
 const CONFIG_PATH = path.join(APP_DIR, '.jira-config.json');
 
+let lastConfigIssue = null;
+
 function loadConfig() {
   const cfg = { url: null, token: null };
-  if (process.env.JIRA_URL) cfg.url = String(process.env.JIRA_URL).replace(/\/+$/, '');
-  if (process.env.JIRA_PERSONAL_TOKEN) cfg.token = String(process.env.JIRA_PERSONAL_TOKEN);
+  let envSeen = false;
+  if (process.env.JIRA_URL) { cfg.url = String(process.env.JIRA_URL).replace(/\/+$/, ''); envSeen = true; }
+  if (process.env.JIRA_PERSONAL_TOKEN) { cfg.token = String(process.env.JIRA_PERSONAL_TOKEN); envSeen = true; }
 
   // OAuth 2.0 / 3LO (Jira Data Center) client-приложение.
   if (process.env.JIRA_OAUTH_CLIENT_ID) cfg.oauthClientId = String(process.env.JIRA_OAUTH_CLIENT_ID).trim();
   if (process.env.JIRA_OAUTH_CLIENT_SECRET) cfg.oauthClientSecret = String(process.env.JIRA_OAUTH_CLIENT_SECRET).trim();
   if (process.env.JIRA_OAUTH_REDIRECT_URI) cfg.oauthRedirectUri = String(process.env.JIRA_OAUTH_REDIRECT_URI).trim();
 
+  let fileUsed = null;
   if ((!cfg.url || !cfg.token) && fs.existsSync(CONFIG_PATH)) {
+    let raw;
     try {
-      const fileCfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-      if (!cfg.url && fileCfg.url) cfg.url = String(fileCfg.url).replace(/\/+$/, '');
-      if (!cfg.token && fileCfg.token) cfg.token = String(fileCfg.token);
-      if (!cfg.oauthClientId && fileCfg.oauthClientId) cfg.oauthClientId = String(fileCfg.oauthClientId).trim();
-      if (!cfg.oauthClientSecret && fileCfg.oauthClientSecret) cfg.oauthClientSecret = String(fileCfg.oauthClientSecret).trim();
-      if (!cfg.oauthRedirectUri && fileCfg.oauthRedirectUri) cfg.oauthRedirectUri = String(fileCfg.oauthRedirectUri).trim();
-    } catch (e) { /* invalid config file -> ignore */ }
+      raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    } catch (e) { /* не читается — игнор */ }
+    if (raw !== undefined) {
+      // Notepad/Windows могут добавить BOM (U+FEFF) — JSON.parse его не переваривает.
+      const text = String(raw).replace(/^\uFEFF/, '');
+      try {
+        const fileCfg = JSON.parse(text);
+        if (!cfg.url && fileCfg.url) cfg.url = String(fileCfg.url).replace(/\/+$/, '');
+        if (!cfg.token && fileCfg.token) cfg.token = String(fileCfg.token);
+        if (!cfg.oauthClientId && fileCfg.oauthClientId) cfg.oauthClientId = String(fileCfg.oauthClientId).trim();
+        if (!cfg.oauthClientSecret && fileCfg.oauthClientSecret) cfg.oauthClientSecret = String(fileCfg.oauthClientSecret).trim();
+        if (!cfg.oauthRedirectUri && fileCfg.oauthRedirectUri) cfg.oauthRedirectUri = String(fileCfg.oauthRedirectUri).trim();
+        fileUsed = CONFIG_PATH;
+      } catch (e) {
+        lastConfigIssue = 'Ошибка разбора JSON в ' + CONFIG_PATH + ': ' + e.message;
+      }
+    }
   }
 
   cfg.configured = !!(cfg.url && cfg.token);
   cfg.oauthConfigured = !!(cfg.url && cfg.oauthClientId && cfg.oauthClientSecret && cfg.oauthRedirectUri);
   cfg.base = cfg.url ? cfg.url + '/rest/api/2' : null;
+  cfg.source = envSeen ? 'env' : (fileUsed ? 'file' : 'none');
+  cfg.configFile = fileUsed;
+  cfg.envSeen = envSeen;
+
+  if (!cfg.configured && !lastConfigIssue) {
+    lastConfigIssue = fs.existsSync(CONFIG_PATH)
+      ? 'Конфиг найден (' + CONFIG_PATH + '), но в нём пустые url/token'
+      : 'Файл конфига не найден в: ' + CONFIG_PATH;
+  }
   return cfg;
 }
 
@@ -55,7 +79,11 @@ function oauthEndpoints(cfg) {
 }
 
 function notConfigured() {
-  const e = new Error('Jira не настроена. Задайте JIRA_URL и JIRA_PERSONAL_TOKEN (или .jira-config.json).');
+  const e = new Error(
+    'Jira не настроена. Проверено: ' + CONFIG_PATH
+    + '. Задайте JIRA_URL и JIRA_PERSONAL_TOKEN (или .jira-config.json рядом с приложением)'
+    + (lastConfigIssue ? '. Причина: ' + lastConfigIssue : '')
+  );
   e.status = 503;
   return e;
 }
@@ -161,7 +189,43 @@ function mapUser(u) {
 module.exports = {
   getConfig() {
     const c = loadConfig();
-    return { configured: c.configured, oauthConfigured: c.oauthConfigured, url: c.url };
+    return {
+      configured: c.configured,
+      oauthConfigured: c.oauthConfigured,
+      url: c.url,
+      source: c.source,
+      configFile: c.configFile,
+      envSeen: c.envSeen,
+      issue: lastConfigIssue,
+    };
+  },
+
+  // Диагностика интеграции: пробует /myself и классифицирует причину сбоя
+  // (auth/network/tls/dns/http), чтобы отличить сеть/прокси/сертификаты от токена.
+  async probe(token) {
+    const cfg = loadConfig();
+    if (!(cfg.url && (cfg.token || token))) {
+      return { ok: false, kind: 'config', status: null, message: lastConfigIssue || 'Jira не настроена' };
+    }
+    try {
+      const me = await module.exports.myself(token || null);
+      return {
+        ok: true,
+        appliedToken: token ? 'session' : 'server',
+        me: { name: me.displayName, email: me.email },
+      };
+    } catch (e) {
+      const cause = e && e.cause;
+      const code = (cause && cause.code) || null;
+      let kind = 'unknown';
+      if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') kind = 'dns';
+      else if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH'].includes(code)) kind = 'network';
+      else if (/CERT|DEPTH_ZERO|UNABLE_TO_VERIFY|SELF_SIGNED|CERT_VERIFY/i.test(String(code || ''))) kind = 'tls';
+      else if (e.status === 401 || e.status === 403) kind = 'auth';
+      else if (e.status >= 400 && e.status < 600) kind = 'http';
+      else if (code) kind = 'network';
+      return { ok: false, kind, code, status: e.status || null, message: (e && e.message) || String(e) || 'неизвестная ошибка' };
+    }
   },
 
   async projects(token) {

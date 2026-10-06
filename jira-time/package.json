@@ -1,0 +1,29 @@
+{
+  "name": "jira-time",
+  "version": "1.0.0",
+  "description": "JiraTime — массовая простановка «Срок исполнения» (duedate) задачам/ошибкам/активностям активного спринта (отдельный сервис, вне портала)",
+  "private": true,
+  "main": "server.js",
+  "bin": {
+    "jira-time": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "build:exe": "pkg . --targets node18-win-x64 --output ../JiraTime.exe",
+    "build:macos": "pkg . --targets node18-macos-arm64 --no-bytecode --public-packages \"*\" --public --output ../JiraTime-mac-arm64 && pkg . --targets node18-macos-x64 --no-bytecode --public-packages \"*\" --public --output ../JiraTime-mac-x64 && node scripts/sign-mac.js"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ]
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.12.1"
+  }
+}

@@ -16,6 +16,9 @@ node_modules/
 
 # Built executable
 portal.exe
+MySkills.exe
+JiraTime.exe
+JiraTime-mac-*
 
 # OS
 Thumbs.db

@@ -1029,6 +1029,8 @@ app.get('/api/jira/health', async (req, res) => {
   // Здоровье учитывает личный токен сессии: если пользователь вошёл по личному
   // токену (или OAuth) и у сессии есть jiraAccessToken — Jira считается доступной,
   // даже когда в .jira-config.json нет серверного token.
+  // Плюс диагностика: источник конфига, причина (если не настроено) и результат
+  // реального пробника /myself (auth/network/tls/dns/http) при доступности.
   const { parseCookies, COOKIE_NAME } = require('./auth');
   const base = jira.getConfig();
   let sessionToken = null;
@@ -1039,9 +1041,17 @@ app.get('/api/jira/health', async (req, res) => {
       if (session) sessionToken = session.jiraAccessToken || null;
     }
   } catch (e) { /* ignore */ }
+  const configured = base.configured || Boolean(base.url && sessionToken);
+  let probe = null;
+  if (configured) {
+    try {
+      probe = await jira.probe(sessionToken || null);
+    } catch (e) { /* ignore */ }
+  }
   res.json({
     ...base,
-    configured: base.configured || Boolean(base.url && sessionToken),
+    configured,
+    probe,
   });
 });
 

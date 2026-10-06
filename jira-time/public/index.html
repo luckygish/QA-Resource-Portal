@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JiraTime</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">JiraTime</div>
+    <div class="status" id="status"></div>
+  </header>
+
+  <main>
+    <section class="toolbar">
+      <label class="field">
+        <span class="label">Проект</span>
+        <select id="project-select"></select>
+      </label>
+      <label class="field">
+        <span class="label">Исполнитель</span>
+        <select id="assignee-select">
+          <option value="">Все</option>
+        </select>
+      </label>
+      <button id="refresh-btn" class="btn" type="button">Обновить</button>
+      <span id="count-label" class="count-label"></span>
+    </section>
+
+    <section class="apply-row">
+      <label class="field date-field">
+        <span class="label">Срок исполнения (dd/MM/yyyy)</span>
+        <input id="due-input" placeholder="дд/мм/гггг" autocomplete="off">
+      </label>
+      <button id="apply-btn" class="btn primary" type="button">Загрузить</button>
+    </section>
+
+    <section id="result-box" class="result hidden"></section>
+
+    <section class="table-wrap">
+      <table id="tasks-table">
+        <thead>
+          <tr>
+            <th class="chk"><input type="checkbox" id="check-all" title="Выбрать все"></th>
+            <th>Ключ</th>
+            <th>Название</th>
+            <th>Тип</th>
+            <th>Статус</th>
+            <th>Исполнитель</th>
+            <th>Текущий срок (dd/MM/yyyy)</th>
+          </tr>
+        </thead>
+        <tbody id="tasks-body"></tbody>
+      </table>
+      <div id="empty-msg" class="empty hidden"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
